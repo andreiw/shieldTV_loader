@@ -3,7 +3,7 @@ LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
 TARGET = shieldTV_demo
-TEXT_BASE = 0x80008000
+TEXT_BASE = 0x80080000
 
 CFLAGS = \
 	-march=armv8-a \

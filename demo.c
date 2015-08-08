@@ -28,7 +28,7 @@ void clear_screen(uint32_t color)
 	uint32_t *fb = (uint32_t *) FB_BASE;
 	uint32_t i = 0;
 
-	for (i = 0; i < 1920 * 1080; i++) {
+	for (i = 0; i < FB_ROWS * FB_COLS; i++) {
 		fb[i] = color;
 	}
 }
