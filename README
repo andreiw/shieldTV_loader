@@ -1,0 +1,51 @@
+64-bit ARM OS/Kernel/Systems Development on an nVidia Shield TV
+===============================================================
+
+The Shield TV is based on the 64-bit nVidia X1 chip.
+
+The Shield TV allows performing an unlock via "fastboot oem unlock", allowing custom OS images to be booted.
+
+What this is
+=============
+
+This is a small demo, demonstrating how to build and boot arbitrary code on your Shield TV.
+
+What you need - required
+========================
+
+* A Shield TV, unlocked. Search Youtube for walkthroughs.
+* GNU Make.
+* An AArch64 GNU toolchain.
+* ADB/Fastboot tools.
+* Bootimg tools (https://github.com/pbatard/bootimg-tools),
+  built and somewhere in your path.
+* An HDMI-capable screen. Note, HDMI, not DVI-HDMI adapter. You want the firmware to configure
+  the screen into 1920x1080 mode, otherwise you'll be in 640x480 and we don't want that...
+
+How to build
+============
+
+$ CROSS_COMPILE=aarch64-linux-gnu- make
+
+... should yield 'shieldTV_demo'.
+
+How to boot
+===========
+
+* Connect the Shield TV a USB cable to your dev workstation.
+
+* $ adb reboot-bootloader
+
+  ...you should now see the nvidia splash screen, followed by the menu.
+
+* $ fastboot boot shieldTV_demo
+
+  ...the code will upload. You will see drawn diagonal black lines on a green background. The green
+  background means you're running in EL2. Woowwwwwzers!
+
+Where to go from here
+=====================
+
+- nv-tegra.nvidia.com/gitweb/?p=linux-3.10.git;a=summary
+- no idea where the TRM would be, but a lot of the peripherals seem to match the K1 (UART...), it's
+  a Tegra after all. Use the DTS for the real bases.
