@@ -20,37 +20,35 @@
 OUTPUT_FORMAT("elf64-littleaarch64")
 OUTPUT_ARCH(aarch64)
 ENTRY(asm_start)
+
 SECTIONS
 {
-	. = 0x00000000;
+  .text 0x0 : ALIGN(CONSTANT(COMMONPAGESIZE)) {
+    PROVIDE(image_start = .);
+    start.o (.text)
+    *(.text .text*)
+    *(.got .got*)
+    *(.rodata .rodata*)
+    *(.data .data*)
+    PROVIDE(bss_start = .);
+    *(.bss .bss*)
+    PROVIDE(bss_end = .);
 
-	. = ALIGN(4);
-	.text : {
-		start.o	(.text)
-		*(.text)
-	}
+    . = ALIGN(0x20);
+    PROVIDE(rela_start = .);
+    *(.rela .rela*)
+    PROVIDE(rela_end = .);
+    PROVIDE(image_end = . );
+  }
 
-	. = ALIGN(8);
-	.rodata : {
-		*(SORT_BY_ALIGNMENT(SORT_BY_NAME(.rodata*)))
-	}
-
-	. = ALIGN(8);
-	.data : {
-		*(.data)
-	}
-
-	/* Uninitialised data */
-	. = ALIGN(8);
-	lds_bss_start = .;
-	.bss (NOLOAD) : {
-		*(.bss) . = ALIGN(8);
-	}
-	lds_bss_end = .;
-
-	/DISCARD/ : { *(.dynstr*) }
-	/DISCARD/ : { *(.dynamic*) }
-	/DISCARD/ : { *(.plt*) }
-	/DISCARD/ : { *(.interp*) }
-	/DISCARD/ : { *(.gnu*) }
+  /DISCARD/ : {
+    *(.note.GNU-stack)
+    *(.gnu_debuglink)
+    *(.interp)
+    *(.dynamic)
+    *(.dynsym)
+    *(.dynstr)
+    *(.hash)
+    *(.comment)
+  }
 }

@@ -20,12 +20,15 @@
 .globl asm_start
 
 /*
- * x0 contains the FDT blob PA, which we don't use
+ * x0 contains the FDT blob PA
  */
+.section ".text"
+.globl image_end
+.globl image_start
 asm_start:
         b       asm_real          // branch to kernel start, magic
         .long   0                 // reserved
-        .quad   TEXT_BASE         // Image load offset from start of RAM, unused
+        .quad   image_start
         .quad   0                 // reserved
         .quad   0                 // reserved
         .quad   0                 // reserved
@@ -37,16 +40,39 @@ asm_start:
         .byte   0x64
         .word   0                 // reserved
 asm_real:
-        ldr     x0, =stack_end
-        mov     sp, x0
-        mrs     x0, CurrentEL
-        lsr     x0, x0, #2
-        bl      demo              // Draw to the fb
+        adr     x1, image_start
+        adr     x2, rela_start
+        adr     x3, rela_end
+reloc_loop:
+        cmp     x2, x3
+        bhs     reloc_done
+
+        //
+        // struct rela_entry_t {
+        //     uint64_t offset;  // relative offset
+        //     uint64_t info;    // 0x403 == R_AARCH64_RELATIVE
+        //     uint64_t addend;  // to adjust by actual loaded address
+        // } rela_entry_t;
+        //
+        ldp     x4, x5, [x2], #24
+        cmp     x5, #0x403       // R_AARCH64_RELATIVE
+        bne     reloc_loop
+        ldr     x5, [x2, #-8]
+        add     x5, x5, x1      // relies on link base being 0, so
+                                  // no need to subtract link base
+        str     x5, [x4, x1]
+        b       reloc_loop
+reloc_done:
+        ldr     x1, =stack_end
+        mov     sp, x1
+        mrs     x1, CurrentEL
+        lsr     x1, x1, #2
+        bl      demo              // x0 = fdt, x1 = EL
 1:      b       1b
 
 .section .data
 .align 4
 stack:
-        .fill 512, 8, 0
+        .fill 4096, 8, 0
 stack_end:
 

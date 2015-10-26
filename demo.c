@@ -17,31 +17,38 @@
  * MA 02111-1307 USA
  */
 
-#include <inttypes.h>
+#include <defs.h>
+#include <libfdt.h>
+#include <vsprintf.h>
+#include <video_fb.h>
 
-#define FB_BASE 0x92ca6000
+/*
+ * The 1.3 firmware default.
+ *
+ * 1.4 and 2.1 use 0x92ca8000, but
+ * we try to detect it below.
+ */
+void *fb_base = (void *) 0x92ca6000;
 #define FB_COLS 1920
 #define FB_ROWS 1080
 
-void clear_screen(uint32_t color)
+void printk(char *fmt, ...)
 {
-	uint32_t *fb = (uint32_t *) FB_BASE;
-	uint32_t i = 0;
-
-	for (i = 0; i < FB_ROWS * FB_COLS; i++) {
-		fb[i] = color;
-	}
+	va_list list;
+	char buf[512];
+	va_start(list, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, list);
+	video_puts(buf);
+	va_end(list);
 }
 
-void draw_pixel(int x, int y)
+void draw_pixel(int x, int y, uint32_t color)
 {
-	uint32_t *fb = (uint32_t *) FB_BASE;
-
-	/* Black. */
-	fb[FB_COLS * y + x] = 0x0;
+	uint32_t *fb = (uint32_t *) fb_base;
+	fb[FB_COLS * y + x] = color;
 }
 
-void bres(int x1, int y1, int x2, int y2)
+void bres(int x1, int y1, int x2, int y2, uint32_t color)
 {
 	int dx, dy, i, e;
 	int incx, incy, inc1, inc2;
@@ -61,7 +68,7 @@ void bres(int x1, int y1, int x2, int y2)
 
 	if(dx > dy)
 	{
-		draw_pixel(x,y);
+		draw_pixel(x, y, color);
 		e = 2*dy - dx;
 		inc1 = 2*( dy -dx);
 		inc2 = 2*dy;
@@ -74,12 +81,12 @@ void bres(int x1, int y1, int x2, int y2)
 			}
 			else e += inc2;
 			x += incx;
-			draw_pixel(x,y);
+			draw_pixel(x, y, color);
 		}
 	}
 	else
 	{
-		draw_pixel(x,y);
+		draw_pixel(x, y, color);
 		e = 2*dx - dy;
 		inc1 = 2*( dx - dy);
 		inc2 = 2*dx;
@@ -92,16 +99,106 @@ void bres(int x1, int y1, int x2, int y2)
 			}
 			else e += inc2;
 			y += incy;
-			draw_pixel(x,y);
+			draw_pixel(x, y, color);
 		}
 	}
 }
 
-void demo(uint32_t el)
+static uint64_t
+memparse(const char *ptr, char **retptr)
 {
-	clear_screen(el == 2 ? 0xff00ff00 : 0xffffffff);
-	bres(0, 0, FB_COLS - 1, FB_ROWS - 1);
-	bres(FB_COLS - 1, 0, 0, FB_ROWS - 1);
-	bres(1, 0, FB_COLS - 1, FB_ROWS - 2);
-	bres(FB_COLS - 2, 0, 0, FB_ROWS - 2);
+	char *endptr;   /* local pointer to end of parsed string */
+
+	uint64_t ret = simple_strtoull(ptr, &endptr, 0);
+
+	switch (*endptr) {
+	case 'G':
+	case 'g':
+		ret <<= 10;
+	case 'M':
+	case 'm':
+		ret <<= 10;
+	case 'K':
+	case 'k':
+		ret <<= 10;
+	endptr++;
+	default:
+		break;
+	}
+
+	if (retptr) {
+		*retptr = endptr;
+	}
+
+	return ret;
+}
+
+static int
+parse_memloc(const char *arg,
+	     uint64_t *psize,
+	     uint64_t *ploc)
+{
+	char *at;
+	unsigned long long size;
+
+	size = memparse(arg, &at);
+	if (*at != '@') {
+		return -1;
+	}
+
+	*ploc = memparse(at + 1, NULL);
+	*psize = size;
+	return 0;
+}
+
+void demo(void *fdt, uint32_t el)
+{
+	int nodeoffset;
+	char *fbparam;
+	uint64_t base;
+	uint64_t size;
+	uint32_t color;
+	const char *cmdline;
+	extern void *image_start;
+	extern void *image_end;
+
+	/*
+	 * Parse /chosen/bootargs for the real base
+	 * of tegra framebuffer.
+	 */
+	nodeoffset = fdt_path_offset(fdt,
+				     "/chosen");
+	if (nodeoffset < 0) {
+		goto cont;
+	}
+
+	cmdline = fdt_getprop(fdt, nodeoffset,
+			      "bootargs", NULL);
+	if (cmdline == NULL) {
+		goto cont;
+	}
+	fbparam = strstr(cmdline, "tegra_fbmem=");
+	if (parse_memloc(fbparam + 12, &size, &base) == 0) {
+		fb_base = (void *) base;
+	}
+
+cont:
+	video_init(fb_base);
+	printk("We are at EL%u\n", el);
+	printk("We are 0x%lx bytes at %p\n",
+	       (uint64_t) &image_end -
+	       (uint64_t) &image_start,
+	       &image_start);
+
+	/*
+	 * Draw some lines diagonal lines in the bottom half of screen.
+	 *
+	 * Green: we're at EL2.
+	 * White: we're at EL1.
+	 */
+	color = el == 2 ? 0xff00ff00 : 0xffffffff;
+	bres(0, FB_ROWS / 2, FB_COLS - 1, FB_ROWS - 1, color);
+	bres(FB_COLS - 1, FB_ROWS / 2, 0, FB_ROWS - 1, color);
+	bres(1, FB_ROWS / 2, FB_COLS - 1, FB_ROWS - 2, color);
+	bres(FB_COLS - 2, FB_ROWS / 2, 0, FB_ROWS - 2, color);
 }
