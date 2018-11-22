@@ -1,5 +1,5 @@
 /*
- * Andrei Warkentin (C) 2014 <andrey.warkentin@gmail.com>
+ * Copyright (C) 2014-2018 Andrei Warkentin <andrey.warkentin@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -17,39 +17,18 @@
  * MA 02111-1307 USA
  */
 
-OUTPUT_FORMAT("elf64-littleaarch64")
-OUTPUT_ARCH(aarch64)
-ENTRY(asm_start)
+#include <defs.h>
+#include <vsprintf.h>
+#include <video_fb.h>
 
-SECTIONS
+void
+printk(char *fmt, ...)
 {
-  .text 0x0 : ALIGN(CONSTANT(COMMONPAGESIZE)) {
-    PROVIDE(image_start = .);
-    start.o (.text)
-    *(.text .text*)
-    *(.got .got*)
-    *(.rodata .rodata*)
-    *(.data .data*)
-    . = ALIGN(0x20);
-    PROVIDE(bss_start = .);
-    *(.bss .bss*)
-    PROVIDE(bss_end = .);
-
-    . = ALIGN(0x20);
-    PROVIDE(rela_start = .);
-    *(.rela .rela*)
-    PROVIDE(rela_end = .);
-    PROVIDE(image_end = . );
-  }
-
-  /DISCARD/ : {
-    *(.note.GNU-stack)
-    *(.gnu_debuglink)
-    *(.interp)
-    *(.dynamic)
-    *(.dynsym)
-    *(.dynstr)
-    *(.hash)
-    *(.comment)
-  }
+	va_list list;
+	char buf[512];
+	va_start(list, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, list);
+	video_puts(buf);
+	va_end(list);
 }
+

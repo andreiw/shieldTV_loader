@@ -237,7 +237,7 @@ extern void video_get_info_str (    /* setup a board string: type, speed, etc. *
 
 #endif
 
-#define WIDTH_BYTES (ALIGN_UP(VIDEO_FONT_WIDTH, 8) / 8)
+#define WIDTH_BYTES (A_UP(VIDEO_FONT_WIDTH, 8) / 8)
 
 static void *video_fb_address;		/* frame buffer address */
 static void *video_console_address;	/* console buffer start address */

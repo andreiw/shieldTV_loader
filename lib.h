@@ -1,5 +1,5 @@
 /*
- * Andrei Warkentin (C) 2014 <andrey.warkentin@gmail.com>
+ * Copyright (C) 2014-2018 Andrei Warkentin <andrey.warkentin@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -17,39 +17,28 @@
  * MA 02111-1307 USA
  */
 
-OUTPUT_FORMAT("elf64-littleaarch64")
-OUTPUT_ARCH(aarch64)
-ENTRY(asm_start)
+#ifndef LIB_H
+#define LIB_H
 
-SECTIONS
-{
-  .text 0x0 : ALIGN(CONSTANT(COMMONPAGESIZE)) {
-    PROVIDE(image_start = .);
-    start.o (.text)
-    *(.text .text*)
-    *(.got .got*)
-    *(.rodata .rodata*)
-    *(.data .data*)
-    . = ALIGN(0x20);
-    PROVIDE(bss_start = .);
-    *(.bss .bss*)
-    PROVIDE(bss_end = .);
+#include <defs.h>
+#include <arm_defs.h>
+#include <string.h>
+#include <ctype.h>
+#include <vsprintf.h>
 
-    . = ALIGN(0x20);
-    PROVIDE(rela_start = .);
-    *(.rela .rela*)
-    PROVIDE(rela_end = .);
-    PROVIDE(image_end = . );
-  }
+void printk(char *fmt, ...);
 
-  /DISCARD/ : {
-    *(.note.GNU-stack)
-    *(.gnu_debuglink)
-    *(.interp)
-    *(.dynamic)
-    *(.dynsym)
-    *(.dynstr)
-    *(.hash)
-    *(.comment)
-  }
-}
+#define BUG() do {						\
+		printk("Panic at %s:%u\n",			\
+		       __FILE__, __LINE__);			\
+		while (1);                                      \
+	} while(0);
+
+#define BUG_ON(condition) do {					\
+		if (unlikely(condition)) {			\
+			printk("'" S(condition) "' failed");	\
+			BUG();					\
+		}						\
+	} while(0)
+
+#endif /* LIB_H */

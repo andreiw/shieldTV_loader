@@ -24,10 +24,7 @@
  * - scnprintf and vscnprintf
  */
 
-#include <defs.h>
-#include <string.h>
-#include <ctype.h>
-#include <vsprintf.h>
+#include <lib.h>
 
 /* Works only for digits and letters, but small and fast */
 #define TOLOWER(x) ((x) | 0x20)

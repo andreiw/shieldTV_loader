@@ -1,3 +1,5 @@
+CROSS_COMPILE ?= ~/src/rpi3/gcc-linaro-5.5.0-2017.10-i686_aarch64-linux-gnu/bin/aarch64-linux-gnu-
+
 CC = $(CROSS_COMPILE)gcc
 LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
@@ -34,10 +36,10 @@ $(TARGET): $(TARGET).bin
 $(TARGET).bin: $(TARGET).elf
 	$(OBJCOPY) -v -O binary $< $@
 
-$(TARGET).elf: start.o demo.o string.o fdt.o ctype.o fdt_ro.o fdt_strerror.o vsprintf.o cfb_console.o
+$(TARGET).elf: start.o demo.o string.o fdt.o ctype.o fdt_ro.o fdt_strerror.o vsprintf.o cfb_console.o usbd.o lib.o
 	$(LD) -T boot.lds -Ttext=$(TEXT_BASE) $(LDFLAGS) $^ -o $@
 
 clean:
-	rm -f *.o $(TARGET) $(TARGET).*
+	rm -f *.o $(TARGET) $(TARGET).* *~
 
 .PHONY: all clean

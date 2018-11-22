@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Andrei Warkentin <andrey.warkentin@gmail.com>
+ * Copyright (C) 2014-2018 Andrei Warkentin <andrey.warkentin@gmail.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -17,10 +17,10 @@
  * MA 02111-1307 USA
  */
 
-#include <defs.h>
+#include <lib.h>
 #include <libfdt.h>
-#include <vsprintf.h>
 #include <video_fb.h>
+#include <usbd.h>
 
 /*
  * The 1.3 firmware default.
@@ -28,86 +28,17 @@
  * 1.4 and 2.1 use 0x92ca8000, but
  * we try to detect it below.
  */
-void *fb_base = (void *) 0x92ca6000;
+void *fb_base = VP(0x92ca6000);
 #define FB_COLS 1920
 #define FB_ROWS 1080
 
-void printk(char *fmt, ...)
-{
-	va_list list;
-	char buf[512];
-	va_start(list, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, list);
-	video_puts(buf);
-	va_end(list);
-}
-
-void draw_pixel(int x, int y, uint32_t color)
-{
-	uint32_t *fb = (uint32_t *) fb_base;
-	fb[FB_COLS * y + x] = color;
-}
-
-void bres(int x1, int y1, int x2, int y2, uint32_t color)
-{
-	int dx, dy, i, e;
-	int incx, incy, inc1, inc2;
-	int x,y;
-
-	dx = x2 - x1;
-	dy = y2 - y1;
-
-	if(dx < 0) dx = -dx;
-	if(dy < 0) dy = -dy;
-	incx = 1;
-	if(x2 < x1) incx = -1;
-	incy = 1;
-	if(y2 < y1) incy = -1;
-	x=x1;
-	y=y1;
-
-	if(dx > dy)
-	{
-		draw_pixel(x, y, color);
-		e = 2*dy - dx;
-		inc1 = 2*( dy -dx);
-		inc2 = 2*dy;
-		for(i = 0; i < dx; i++)
-		{
-			if(e >= 0)
-			{
-				y += incy;
-				e += inc1;
-			}
-			else e += inc2;
-			x += incx;
-			draw_pixel(x, y, color);
-		}
-	}
-	else
-	{
-		draw_pixel(x, y, color);
-		e = 2*dx - dy;
-		inc1 = 2*( dx - dy);
-		inc2 = 2*dx;
-		for(i = 0; i < dy; i++)
-		{
-			if(e >= 0)
-			{
-				x += incx;
-				e += inc1;
-			}
-			else e += inc2;
-			y += incy;
-			draw_pixel(x, y, color);
-		}
-	}
-}
+static usbd uctx __align(USBD_ALIGNMENT);
 
 static uint64_t
 memparse(const char *ptr, char **retptr)
 {
-	char *endptr;   /* local pointer to end of parsed string */
+	/* local pointer to end of parsed string */
+	char *endptr;
 
 	uint64_t ret = simple_strtoull(ptr, &endptr, 0);
 
@@ -151,13 +82,58 @@ parse_memloc(const char *arg,
 	return 0;
 }
 
+void arch_dump(void)
+{
+	uint64_t el;
+	uint64_t sctlr;
+	uint64_t tcr;
+	uint64_t ttbr0;
+	uint64_t vbar;
+
+	ReadSysReg(el, CurrentEL);
+	el = SPSR_2_EL(el);
+	printk("We are at EL%u\n", el);
+
+	if (el == 2) {
+		ReadSysReg(sctlr, sctlr_el2);
+		ReadSysReg(tcr, tcr_el2);
+		ReadSysReg(ttbr0, ttbr0_el2);
+		ReadSysReg(vbar, vbar_el2);
+	} else {
+		ReadSysReg(sctlr, sctlr_el1);
+		ReadSysReg(tcr, tcr_el1);
+		ReadSysReg(ttbr0, ttbr0_el1);
+		ReadSysReg(vbar, vbar_el1);
+	}
+
+	printk("SCTLR 0x%lx VBAR  0x%lx\n",
+	       sctlr, vbar);
+	printk("TCR   0x%lx TTBR0 0x%lx\n",
+	       tcr, ttbr0);
+
+	if ((sctlr & SCTLR_M) == 0) {
+		printk("MMU off\n");
+	}
+	if ((sctlr & SCTLR_A) != 0) {
+		printk("Alignment check set\n");
+	}
+	if ((sctlr & SCTLR_C) == 0) {
+		printk("Data cache off\n");
+	}
+	if ((sctlr & SCTLR_SA) != 0) {
+		printk("SP alignment check set\n");
+	}
+	if ((sctlr & SCTLR_I) == 0) {
+		printk("Instruction cache off\n");
+	}
+}
+
 void demo(void *fdt, uint32_t el)
 {
 	int nodeoffset;
 	char *fbparam;
 	uint64_t base;
 	uint64_t size;
-	uint32_t color;
 	const char *cmdline;
 	extern void *image_start;
 	extern void *image_end;
@@ -179,26 +155,20 @@ void demo(void *fdt, uint32_t el)
 	}
 	fbparam = strstr(cmdline, "tegra_fbmem=");
 	if (parse_memloc(fbparam + 12, &size, &base) == 0) {
-		fb_base = (void *) base;
+		fb_base = VP(base);
 	}
 
 cont:
 	video_init(fb_base);
-	printk("We are at EL%u\n", el);
 	printk("We are 0x%lx bytes at %p\n",
 	       (uint64_t) &image_end -
 	       (uint64_t) &image_start,
 	       &image_start);
+	printk("FB is at %p\n", fb_base);
 
-	/*
-	 * Draw some lines diagonal lines in the bottom half of screen.
-	 *
-	 * Green: we're at EL2.
-	 * White: we're at EL1.
-	 */
-	color = el == 2 ? 0xff00ff00 : 0xffffffff;
-	bres(0, FB_ROWS / 2, FB_COLS - 1, FB_ROWS - 1, color);
-	bres(FB_COLS - 1, FB_ROWS / 2, 0, FB_ROWS - 1, color);
-	bres(1, FB_ROWS / 2, FB_COLS - 1, FB_ROWS - 2, color);
-	bres(FB_COLS - 2, FB_ROWS / 2, 0, FB_ROWS - 2, color);
+	arch_dump();
+	usbd_init(&uctx);
+	while(1) {
+		usbd_poll(&uctx);
+	}
 }

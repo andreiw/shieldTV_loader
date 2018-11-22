@@ -44,11 +44,8 @@ typedef _Bool bool_t;
 #define NULL ((void *) 0)
 #define BITS_PER_LONG 64
 #define PAGE_SIZE     4096
-#define ALIGN_UP(addr, align) (((addr) + (align) - 1) & (~((align) - 1)))
-#define PALIGN_UP(p, align) ((typeof(p))(((uintptr_t)(p) + (align) - 1) & (~((align) - 1))))
-#define ALIGN(addr, align) (((addr) - 1) & (~((align) - 1)))
-#define SIFY(...) _SIFY(__VA_ARGS__)
-#define _SIFY(...) #__VA_ARGS__
+
+#define BIT(x)    (1ull << (x))
 
 #define container_of(ptr, type, member) ({                      \
         const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
@@ -68,10 +65,6 @@ typedef _Bool bool_t;
 
 #define likely(x)     (__builtin_constant_p(x) ? !!(x) : __builtin_expect(!!(x), 1))
 #define unlikely(x)   (__builtin_constant_p(x) ? !!(x) : __builtin_expect(!!(x), 0))
-
-#define BUG()
-
-#define BUG_ON(condition) do { if (unlikely(condition)) BUG(); } while(0)
 
 #define MB(x) (1UL * x * 1024 * 1024)
 #define TB(x) (1UL * x * 1024 * 1024 * 1024 * 1024)
@@ -135,4 +128,38 @@ swab64(uint64_t x)
 #define le64_to_cpu(x) ((uint64_t) x)
 #define le32_to_cpu(x) ((uint32_t) x)
 #define le16_to_cpu(x) ((uint16_t) x)
+
+#define _IX_BITS(sm, bg) ((bg) - (sm) + 1)
+#define _IX_MASK(sm, bg) ((1ul << _IX_BITS((sm), (bg))) - 1)
+#define _INTERNAL_X(val, sm, bg) ((val) >> (sm)) & _IX_MASK((sm), (bg))
+#define X(val, ix1, ix2) (((ix1) < (ix2)) ? _INTERNAL_X((val), (ix1), (ix2)) :   \
+                          _INTERNAL_X((val), (ix2), (ix1)))
+
+#define _INTERNAL_I(val, sm, bg)  (((val) & _IX_MASK((sm), (bg))) << (sm))
+#define I(val, ix1, ix2) (((ix1) < (ix2)) ? _INTERNAL_I((val), (ix1), (ix2)) :   \
+                          _INTERNAL_I((val), (ix2), (ix1)))
+#define _INTERNAL_M(val, sm, bg)  ((val) & (_IX_MASK((sm), (bg)) << (sm)))
+#define M(val, ix1, ix2) (((ix1) < (ix2)) ? _INTERNAL_M((val), (ix1), (ix2)) :   \
+                          _INTERNAL_M((val), (ix2), (ix1)))
+
+#define A_UP(Value, Alignment)  (((Value) + (Alignment) - 1) & (~((Alignment) - 1)))
+#define PA_UP(p, align) ((typeof(p)) A_UP(((uintptr_t) (p)), align))
+#define A_DOWN(Value, Alignment) ((Value) & (~((Alignment) - 1)))
+
+#define IS_ALIGNED(Value, Alignment) (((UINTN) (Value) & (Alignment - 1)) == 0)
+
+#define VP(x) ((void *)(x))
+#define U8P(x) ((uint8_t *)(x))
+#define U16P(x) ((uint16_t *)(x))
+#define U32P(x) ((uint32_t *)(x))
+#define U64P(x) ((uint64_t *)(x))
+#define UN(x) ((uintptr_t)(x))
+
+#define ELES(x) (sizeof((x)) / sizeof((x)[0]))
+
+#define _INTERNAL_S(x) #x
+#define S(x) _INTERNAL_S(x)
+
+#define C_ASSERT(e) { typedef char __C_ASSERT__[(e)?0:-1]; __C_ASSERT__ c; (void)c; }
+
 #endif /* DEFS_H */

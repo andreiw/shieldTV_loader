@@ -63,11 +63,18 @@ reloc_loop:
         str     x5, [x4, x1]
         b       reloc_loop
 reloc_done:
+load_stack:
         ldr     x1, =stack_end
         mov     sp, x1
-        mrs     x1, CurrentEL
-        lsr     x1, x1, #2
-        bl      demo              // x0 = fdt, x1 = EL
+clear_bss:
+        ldr     x1, bss_start
+        ldr     x2, bss_end
+1:      cmp     x1, x2
+        b.hs    go_to_c
+        str     xzr, [x1], #8
+        b       1b
+go_to_c:
+        bl      demo // x0 = fdt
 1:      b       1b
 
 .section .data
