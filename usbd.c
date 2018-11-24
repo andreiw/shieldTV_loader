@@ -88,12 +88,23 @@
 #define EP_CTRL_TXS        BIT(16)
 #define EP_CTRL_TXR        BIT(22)
 #define EP_CTRL_TXE        BIT(23)
-#define MAX_REQS 16
-static usbd_req *reqs[MAX_REQS * 2];
 
+#define MAX_EPS  16
+#define MAX_REQS (MAX_EPS * 2)
+static usbd_req *usbd_reqs[MAX_REQS];
+
+static const char * const usbd_ep_type_names[] = {
+	"EP_TYPE_NONE",
+	"EP_TYPE_CTLR",
+	"EP_TYPE_ISO",
+	"EP_TYPE_BULK",
+	"EP_TYPE_INTR"
+};
 
 static void
-flush(usbd *context, int ep, bool_t in)
+usbd_flush(usbd *context,
+	   int ep,
+	   bool_t in)
 {
 	uint32_t bits = 0;
 
@@ -112,30 +123,87 @@ flush(usbd *context, int ep, bool_t in)
 	} while (IN32(EPTREADY) & bits);
 }
 
-usbd_status
-usbd_init(usbd *context)
+static void
+usbd_req_init(usbd_req *req,
+	      usbd_ep *ep)
 {
-	if (UN(&context->ep0_out_qtd) & (DTD_ALIGNMENT - 1)) {
-		return USBD_BAD_ALIGNMENT;
+	memset(req, 0, sizeof(*req));
+	req->ep = ep;
+	req->buffer = req->small_buffer;
+}
+
+static usbd_ep *
+usbd_get_ep(usbd *context,
+	    int ep,
+	    bool_t send)
+{
+	unsigned i;
+	struct usbd_ep **pe = context->eps;
+
+	if (ep == 0) {
+		if (send) {
+			return &context->ep0_in;
+		}
+
+		return &context->ep0_out;
 	}
 
-	if (UN(&context->ep0_in_qtd) & (DTD_ALIGNMENT - 1)) {
-		return USBD_BAD_ALIGNMENT;
+	if (pe == NULL) {
+		return NULL;
 	}
 
-	memset(&context->ep0_out, 0, sizeof(context->ep0_out));
-	context->ep0_out.qtd = &context->ep0_out_qtd;
-	context->ep0_out.ep = 0;
+	for (i = 0; pe[i] != NULL; i++) {
+		if (pe[i]->num != ep) {
+			continue;
+		}
+		return pe[i];
+	}
+
+	return NULL;
+}
+
+usbd_status
+usbd_init(usbd *context,
+	  usbd_td *qtds,
+	  size_t qtd_count)
+
+{
+	size_t i;
+
+	for (i = 0; i < qtd_count; i++) {
+		BUG_ON ((UN(qtds + i) & (USBD_TD_ALIGNMENT - 1)) != 0);
+	}
+
+	context->qtds = qtds;
+	context->qtd_count = qtd_count;
+
+	context->ep0_out.num = 0;
 	context->ep0_out.send = false;
-	context->ep0_out.ctx = context->ctx;
-	context->ep0_out.buffer = context->ep0_out.small_buffer;
+	context->ep0_out.type = EP_TYPE_CTLR;
 
-	memset(&context->ep0_in, 0, sizeof(context->ep0_in));
-	context->ep0_in.qtd = &context->ep0_in_qtd;
-	context->ep0_in.ep = 0;
+	context->ep0_in.num = 0;
 	context->ep0_in.send = true;
-	context->ep0_in.ctx = context->ctx;
-	context->ep0_in.buffer = context->ep0_in.small_buffer;
+	context->ep0_in.type = EP_TYPE_CTLR;
+
+	for (i = 0; i < MAX_REQS; i++) {
+		usbd_ep *ep;
+		int num = i / 2;
+		bool_t in = (i & 1) != 0;
+
+		ep = usbd_get_ep(context, num, in);
+		if (ep != NULL) {
+			BUG_ON (num != ep->num);
+			BUG_ON (qtd_count == 0);
+			ep->qtd = qtds++;
+			qtd_count--;
+			/* printk("assigned qtd %p to EP%u %s %s\n", ep->qtd, */
+			/*        ep->num, usbd_ep_type_names[ep->type], */
+			/*        in ? "in" : "out"); */
+		}
+	}
+
+	usbd_req_init(&context->ep0_out_req, &context->ep0_out);
+	usbd_req_init(&context->ep0_in_req, &context->ep0_in);
 
 	context->hs = false;
 	context->descs = NULL;
@@ -147,7 +215,7 @@ usbd_init(usbd *context)
 	OUT32(USBMODE_DEVICE, USBMODE);
 	while((IN32(USBMODE) & USBMODE_MASK) != USBMODE_DEVICE);
 
-	flush(context, -1, false);
+	usbd_flush(context, -1, false);
 
 	OUT32(QH_OFFSET_OUT(0), USBLISTADR);
 	OUT32(USBCMD_ITC_DEFAULT | USBCMD_RUN, USBCMD);
@@ -155,8 +223,10 @@ usbd_init(usbd *context)
 }
 
 int
-usbd_ep_init(usbd *context, int ep,
-	     usbd_ep_type_t rx_type, usbd_ep_type_t tx_type)
+usbd_ep_hw_reset(usbd *context,
+		 int ep,
+		 usbd_ep_type rx_type,
+		 usbd_ep_type tx_type)
 {
 	uint32_t bits = 0;
 
@@ -180,7 +250,8 @@ usbd_ep_init(usbd *context, int ep,
 }
 
 static void
-usbd_ep_stall(usbd *context, int ep)
+usbd_ep_stall(usbd *context,
+	      int ep)
 {
 	OUT32(EP_CTRL_RXS | EP_CTRL_TXS, EP_CTRL(ep));
 }
@@ -214,13 +285,13 @@ usbd_port_reset(usbd *context)
 
 	OUT32(IN32(EPTCOMPLETE), EPTCOMPLETE);
 	OUT32(IN32(EPTSETUPST), EPTSETUPST);
-	flush(context, -1, false);
+	usbd_flush(context, -1, false);
 
-	for (i = 0; i < ELES(reqs); i++) {
-		usbd_req *req = reqs[i];
+	for (i = 0; i < ELES(usbd_reqs); i++) {
+		usbd_req *req = usbd_reqs[i];
 
 		if (req != NULL) {
-			reqs[i] = NULL;
+			usbd_reqs[i] = NULL;
 			req->error = true;
 			if (req->complete != NULL) {
 				req->complete(context, req);
@@ -228,9 +299,10 @@ usbd_port_reset(usbd *context)
 		}
 	}
 
-	for (i = 0; i < MAX_REQS; i++) {
-		usbd_ep_init(context, i, EP_TYPE_NONE,
-			     EP_TYPE_NONE);
+	for (i = 0; i < MAX_EPS; i++) {
+		usbd_ep_hw_reset(context, i,
+				 EP_TYPE_NONE,
+				 EP_TYPE_NONE);
 	}
 
 	if (context->port_reset == NULL) {
@@ -239,34 +311,50 @@ usbd_port_reset(usbd *context)
 	return context->port_reset(context);
 }
 
-static void
-init_qh(int ep,
-	ep_queue_head *qh,
-	ep_td_struct *td,
-	uint32_t packet_len,
-	bool_t send)
+static uint32_t
+usbd_ep_get_max_packet(usbd *context,
+		       usbd_ep *e)
 {
-	memset(qh, 0, sizeof(*qh));
-	qh->max_pkt_length =
-		(packet_len << EP_QUEUE_HEAD_MAX_PKT_LEN_POS) |
-		EP_QUEUE_HEAD_ZLT_SEL;
-
-	if (!send && ep == 0) {
-		qh->max_pkt_length |= EP_QUEUE_HEAD_IOS;
+	if (e->type == EP_TYPE_CTLR) {
+		return USBD_CONTROL_MAX;
+	} else if (e->type == EP_TYPE_BULK) {
+		return context->hs ? USBD_HS_BULK_MAX : USBD_FS_BULK_MAX;
+	} else if (e->type == EP_TYPE_INTR) {
+		return context->hs ? USBD_HS_INTR_MAX : USBD_FS_INTR_MAX;
 	}
 
-	qh->curr_dtd_ptr = DTD_ADDR_MASK | DTD_NEXT_TERMINATE;
-	qh->next_dtd_ptr = (uint32_t) (uintptr_t) td;
+	return context->hs ? USBD_HS_ISO_MAX : USBD_FS_ISO_MAX;
 }
 
 static void
-init_td(ep_td_struct *td,
-	uint32_t size,
-	void *buf)
+usbd_qh_init(usbd *context,
+	     usbd_ep *ep,
+	     usbd_qh *qh)
+{
+	uint32_t packet_len = usbd_ep_get_max_packet(context, ep);
+	BUG_ON (packet_len == 0);
+
+	memset(qh, 0, sizeof(*qh));
+	qh->max_pkt_length =
+		(packet_len << USBD_QH_MAX_PKT_LEN_POS) |
+		USBD_QH_ZLT_SEL;
+
+	if (!ep->send && ep->num == 0) {
+		qh->max_pkt_length |= USBD_QH_IOS;
+	}
+
+	qh->curr_dtd_ptr = USBD_TD_ADDR_MASK | USBD_TD_NEXT_TERMINATE;
+	qh->next_dtd_ptr = (uint32_t) UN(ep->qtd);
+}
+
+static void
+usbd_td_init(usbd_td *td,
+	     uint32_t size,
+	     void *buf)
 {
 	memset(td, 0, sizeof(*td));
-	td->next_td_ptr = DTD_ADDR_MASK | DTD_NEXT_TERMINATE;
-	td->size_ioc_sts = (size << 16) | DTD_STATUS_ACTIVE;
+	td->next_td_ptr = USBD_TD_ADDR_MASK | USBD_TD_NEXT_TERMINATE;
+	td->size_ioc_sts = (size << 16) | USBD_TD_STATUS_ACTIVE;
 	td->buff_ptr0 = (uint32_t) UN(buf);
 	if (size <= 0x1000) {
 		return;
@@ -287,106 +375,80 @@ init_td(ep_td_struct *td,
 }
 
 static void
-usbd_ep_prime(usbd *context, int ep, bool_t in)
+usbd_ep_prime(usbd *context,
+	      usbd_ep *ep)
 {
 	uint32_t bits = 0;
 
-	if (in) {
-		bits = BIT(16 + ep);
+	if (ep->send) {
+		bits = BIT(16 + ep->num);
 	} else {
-		bits = BIT(ep);
+		bits = BIT(ep->num);
 	}
 
 	OUT32(bits, EPTPRIME);
 }
 
 static void
-usbd_req_complete(usbd *context, usbd_req *ep)
+usbd_req_complete(usbd *context,
+		  usbd_req *req)
 {
-	if (ep->complete == NULL) {
+	usbd_ep *ep = req->ep;
+
+	BUG_ON(ep == NULL);
+
+	if (req->complete == NULL) {
 		return;
 	}
 
-	ep->io_done = ep->buffer_length -
-		((ep->qtd->size_ioc_sts & DTD_PACKET_SIZE) >>
-		 DTD_LENGTH_BIT_POS);
-	ep->error = (ep->qtd->size_ioc_sts & DTD_ERROR_MASK) != 0;
-	ep->complete(context, ep);
-}
-
-static usbd_ep_type_t
-usbd_get_ep_type(usbd *context, int ep, bool_t send)
-{
-	uint32_t bits;
-
-	if (ep == 0) {
-		return EP_TYPE_CTLR;
-	}
-
-	bits = IN32(EP_CTRL(ep));
-	if (send) {
-		return X(bits, 19, 18) + 1;
-	}
-
-	return X(bits, 3, 2) + 1;
-}
-
-static uint32_t
-usbd_get_ep_max_packet(usbd *context, int ep, bool_t send)
-{
-	usbd_ep_type_t type = usbd_get_ep_type(context, ep, send);
-
-	BUG_ON (type == EP_TYPE_NONE);
-
-	if (type == EP_TYPE_CTLR) {
-		return USBD_CONTROL_MAX;
-	} else if (type == EP_TYPE_BULK) {
-		return context->hs ? USBD_HS_BULK_MAX : USBD_FS_BULK_MAX;
-	} else if (type == EP_TYPE_INTR) {
-		return context->hs ? USBD_HS_INTR_MAX : USBD_FS_INTR_MAX;
-	}
-
-	return context->hs ? USBD_HS_ISO_MAX : USBD_FS_ISO_MAX;
+	req->io_done = req->buffer_length -
+		((ep->qtd->size_ioc_sts & USBD_TD_PACKET_SIZE) >>
+		 USBD_TD_LENGTH_BIT_POS);
+	req->error = (ep->qtd->size_ioc_sts & USBD_TD_ERROR_MASK) != 0;
+	req->complete(context, req);
 }
 
 usbd_status
-usbd_req_submit(usbd *context, usbd_req *req)
+usbd_req_submit(usbd *context,
+		usbd_req *req)
 {
-	int ix = req->ep;
+	int ix;
+	usbd_qh *qh;
+	usbd_ep *ep = req->ep;
+
+	BUG_ON(ep == NULL);
+	ix = ep->num;
+
 	req->buffer_length =  min(req->buffer_length,
 				  (uint32_t) 0x5000);
-	ep_queue_head *qh;
 
-	if (req->send) {
-		qh = (ep_queue_head *) QH_OFFSET_IN(req->ep);
-		ix += MAX_REQS;
+	if (ep->send) {
+		qh = (usbd_qh *) QH_OFFSET_IN(ep->num);
+		ix += MAX_EPS;
 	} else {
-		qh = (ep_queue_head *) QH_OFFSET_OUT(req->ep);
+		qh = (usbd_qh *) QH_OFFSET_OUT(ep->num);
 	}
 
-	BUG_ON(reqs[ix] != NULL);
+	BUG_ON(usbd_reqs[ix] != NULL);
 
-	flush(context, req->ep, req->send);
+	usbd_flush(context, ep->num, ep->send);
 
 	if (req->buffer_length != 0) {
-		if (req->send) {
+		if (ep->send) {
 			DSB_ST();
 		} else {
 			DSB_LD();
 		}
 	}
 
-	init_td(req->qtd, req->buffer_length, req->buffer);
+	usbd_td_init(ep->qtd, req->buffer_length, req->buffer);
 	DSB_ST();
 
-	init_qh(req->ep, qh, req->qtd,
-		usbd_get_ep_max_packet(context,
-				       req->ep, req->send),
-		req->send);
+	usbd_qh_init(context, ep, qh);
 	DSB_ST();
 
-	usbd_ep_prime(context, req->ep, req->send);
-	reqs[ix] = req;
+	usbd_ep_prime(context, ep);
+	usbd_reqs[ix] = req;
 
 	return USBD_SUCCESS;
 }
@@ -394,45 +456,42 @@ usbd_req_submit(usbd *context, usbd_req *req)
 static void
 usbd_ep0_setup_ack(usbd *context)
 {
-	context->ep0_in.buffer_length = 0;
-	context->ep0_in.complete = NULL;
+	context->ep0_in_req.buffer_length = 0;
+	context->ep0_in_req.complete = NULL;
 
-	usbd_req_submit(context, &context->ep0_in);
+	usbd_req_submit(context, &context->ep0_in_req);
 }
 
 static void
-usbd_ep0_in_complete(usbd *context, usbd_req *req)
+usbd_ep0_in_req_complete(usbd *context,
+			 usbd_req *req)
 {
 	if (req->error) {
 		return;
 	}
 
-	context->ep0_out.buffer_length = 0;
-	context->ep0_out.complete = NULL;
-	usbd_req_submit(context, &context->ep0_out);
+	context->ep0_out_req.buffer_length = 0;
+	context->ep0_out_req.complete = NULL;
+	usbd_req_submit(context, &context->ep0_out_req);
 }
 
 static void
-usbd_ep0_setup_tx(usbd *context, void *buf, uint32_t buffer_length)
+usbd_ep0_setup_tx(usbd *context,
+		  void *buf,
+		  uint32_t buffer_length)
 {
-	context->ep0_in.buffer_length = buffer_length;
-	memcpy(context->ep0_in.buffer, buf, buffer_length);
-	context->ep0_in.complete = usbd_ep0_in_complete;;
+	context->ep0_in_req.buffer_length = buffer_length;
+	memcpy(context->ep0_in_req.buffer, buf, buffer_length);
+	context->ep0_in_req.complete = usbd_ep0_in_req_complete;;
 
-	usbd_req_submit(context, &context->ep0_in);
+	usbd_req_submit(context, &context->ep0_in_req);
 }
 
 static usbd_status
-usbd_ep0_setup(usbd *context, usb_ctrlrequest *request)
+usbd_ep0_setup(usbd *context,
+	       usb_ctrlrequest *request)
 {
 	usbd_desc_table *d;
-
-	printk("saw bRT %u bR %u wV 0x%x wI 0x%x wL 0x%x\n",
-	       request->bRequestType,
-	       request->bRequest,
-	       request->wValue,
-	       request->wIndex,
-	       request->wLength);
 
 #define ST(bRT, bR) (((bRT) << 8) | (bR))
 	switch (ST(request->bRequestType,
@@ -475,10 +534,11 @@ usbd_ep0_setup(usbd *context, usb_ctrlrequest *request)
 }
 
 static usbd_status
-usbd_port_setup(usbd *context, uint32_t setupst)
+usbd_port_setup(usbd *context,
+		uint32_t setupst)
 {
 	int ep_ix;
-	ep_queue_head *qh;
+	usbd_qh *qh;
 	usbd_status setup_status;
 
 	for (ep_ix = 0; setupst; setupst >>= 1, ep_ix++) {
@@ -488,9 +548,9 @@ usbd_port_setup(usbd *context, uint32_t setupst)
 			continue;
 		}
 
-		qh = (ep_queue_head *) QH_OFFSET_OUT(ep_ix);
-			memcpy(&request, qh->setup_buffer,
-			       sizeof(usb_ctrlrequest));
+		qh = (usbd_qh *) QH_OFFSET_OUT(ep_ix);
+		memcpy(&request, qh->setup_buffer,
+		       sizeof(usb_ctrlrequest));
 
 		OUT32(BIT(ep_ix), EPTSETUPST);
 		while ((IN32(EPTSETUPST) & BIT(ep_ix)) != 0);
@@ -504,7 +564,12 @@ usbd_port_setup(usbd *context, uint32_t setupst)
 		}
 
 		if (setup_status != USBD_SUCCESS) {
-			printk("Stalling\n");
+			printk("Stalling bRT %u bR %u wV 0x%x wI 0x%x wL 0x%x\n",
+			       request.bRequestType,
+			       request.bRequest,
+			       request.wValue,
+			       request.wIndex,
+			       request.wLength);
 			usbd_ep_stall(context, ep_ix);
 		}
 	}
@@ -513,18 +578,19 @@ usbd_port_setup(usbd *context, uint32_t setupst)
 }
 
 static void
-usbd_completions(usbd *context, uint32_t complete)
+usbd_completions(usbd *context,
+		 uint32_t complete)
 {
 	int ep_ix;
 
 	for (ep_ix = 0; complete; complete >>= 1, ep_ix++) {
-		usbd_req *ep = reqs[ep_ix];
+		usbd_req *ep = usbd_reqs[ep_ix];
 
 		if ((complete & 1) == 0) {
 			continue;
 		}
 
-		reqs[ep_ix] = NULL;
+		usbd_reqs[ep_ix] = NULL;
 		DSB_LD();
 		usbd_req_complete(context, ep);
 	}
@@ -542,7 +608,8 @@ usbd_poll(usbd *context)
 		OUT32(status, USBSTS);
 
 		if ((status & USBSTS_SLI) != 0) {
-			return usbd_init(context);
+			return usbd_init(context, context->qtds,
+					 context->qtd_count);
 		} else if ((status & USBSTS_RESET) != 0) {
 			return usbd_port_reset(context);
 		} else if ((status && USBSTS_PORT_CHANGE) != 0) {

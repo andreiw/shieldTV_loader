@@ -36,7 +36,7 @@ void printk(char *fmt, ...);
 
 #define BUG_ON(condition) do {					\
 		if (unlikely(condition)) {			\
-			printk("'" S(condition) "' failed");	\
+			printk("'" S(condition) "' failed\n");	\
 			BUG();					\
 		}						\
 	} while(0)

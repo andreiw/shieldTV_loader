@@ -55,16 +55,16 @@
  * boundary.
  *
  */
-typedef struct ep_td_struct {
-#define DTD_NEXT_TERMINATE                   0x00000001
+typedef struct usbd_td {
+#define USBD_TD_NEXT_TERMINATE                   0x00000001
 	uint32_t next_td_ptr;	/* Next TD pointer(31-5), T(0) set
 				   indicate invalid */
-#define DTD_IOC                              0x00008000
-#define DTD_STATUS_ACTIVE                    0x00000080
-#define DTD_STATUS_HALTED                    0x00000040
-#define DTD_STATUS_DATA_BUFF_ERR             0x00000020
-#define DTD_STATUS_TRANSACTION_ERR           0x00000008
-#define DTD_RESERVED_FIELDS                  0x80007300
+#define USBD_TD_IOC                              0x00008000
+#define USBD_TD_STATUS_ACTIVE                    0x00000080
+#define USBD_TD_STATUS_HALTED                    0x00000040
+#define USBD_TD_STATUS_DATA_BUFF_ERR             0x00000020
+#define USBD_TD_STATUS_TRANSACTION_ERR           0x00000008
+#define USBD_TD_RESERVED_FIELDS                  0x80007300
 	uint32_t size_ioc_sts;	/* Total bytes (30-16), IOC (15),
 				   MultO(11-10), STS (7-0)	*/
 	uint32_t buff_ptr0;		/* Buffer pointer Page 0 */
@@ -73,20 +73,20 @@ typedef struct ep_td_struct {
 	uint32_t buff_ptr3;		/* Buffer pointer Page 3 */
 	uint32_t buff_ptr4;		/* Buffer pointer Page 4 */
 	uint32_t dummy_for_aligned_qtd_packing;
-} __packed ep_td_struct;
+} __packed usbd_td;
 
-#define DTD_ADDR_MASK                        0xFFFFFFE0
-#define DTD_PACKET_SIZE                      0x7FFF0000
-#define DTD_LENGTH_BIT_POS                   16
-#define DTD_ERROR_MASK                       (DTD_STATUS_HALTED | \
-					      DTD_STATUS_DATA_BUFF_ERR | \
-					      DTD_STATUS_TRANSACTION_ERR)
-#define DTD_ALIGNMENT			      0x20
+#define USBD_TD_ADDR_MASK                        0xFFFFFFE0
+#define USBD_TD_PACKET_SIZE                      0x7FFF0000
+#define USBD_TD_LENGTH_BIT_POS                   16
+#define USBD_TD_ERROR_MASK                       (USBD_TD_STATUS_HALTED | \
+					      USBD_TD_STATUS_DATA_BUFF_ERR | \
+					      USBD_TD_STATUS_TRANSACTION_ERR)
+#define USBD_TD_ALIGNMENT			      0x20
 
 /*
  * Endpoint Queue Head.
  */
-typedef struct ep_queue_head {
+typedef struct usbd_qh {
 	uint32_t max_pkt_length;	/* Mult(31-30), Zlt(29), Max Pkt len and IOS(15) */
 	uint32_t curr_dtd_ptr;		/* Current dTD Pointer(31-5) */
 	uint32_t next_dtd_ptr;		/* Next dTD Pointer(31-5), T(0) */
@@ -100,22 +100,22 @@ typedef struct ep_queue_head {
 	uint32_t res1;
 	uint8_t setup_buffer[8]; /* Setup data 8 bytes */
 	uint32_t res2[4];
-} __packed ep_queue_head;
+} __packed usbd_qh;
 
-#define EP_QUEUE_HEAD_MULT_POS               30
-#define EP_QUEUE_HEAD_ZLT_SEL                0x20000000
-#define EP_QUEUE_HEAD_MAX_PKT_LEN_POS        16
-#define EP_QUEUE_HEAD_MAX_PKT_LEN(ep_info)   (((ep_info)>>16)&0x07ff)
-#define EP_QUEUE_HEAD_IOS                    0x00008000
-#define EP_QUEUE_HEAD_NEXT_TERMINATE         0x00000001
-#define EP_QUEUE_HEAD_IOC                    0x00008000
-#define EP_QUEUE_HEAD_MULTO                  0x00000C00
-#define EP_QUEUE_HEAD_STATUS_HALT            0x00000040
-#define EP_QUEUE_HEAD_STATUS_ACTIVE          0x00000080
-#define EP_QUEUE_CURRENT_OFFSET_MASK         0x00000FFF
-#define EP_QUEUE_HEAD_NEXT_POINTER_MASK      0xFFFFFFE0
-#define EP_QUEUE_FRINDEX_MASK                0x000007FF
-#define EP_MAX_LENGTH_TRANSFER               0x4000
+#define USBD_QH_MULT_POS               30
+#define USBD_QH_ZLT_SEL                0x20000000
+#define USBD_QH_MAX_PKT_LEN_POS        16
+#define USBD_QH_MAX_PKT_LEN(ep_info)   (((ep_info)>>16)&0x07ff)
+#define USBD_QH_IOS                    0x00008000
+#define USBD_QH_NEXT_TERMINATE         0x00000001
+#define USBD_QH_IOC                    0x00008000
+#define USBD_QH_MULTO                  0x00000C00
+#define USBD_QH_STATUS_HALT            0x00000040
+#define USBD_QH_STATUS_ACTIVE          0x00000080
+#define EP_QUEUE_CURRENT_OFFSET_MASK   0x00000FFF
+#define USBD_QH_NEXT_POINTER_MASK      0xFFFFFFE0
+#define EP_QUEUE_FRINDEX_MASK          0x000007FF
+#define EP_MAX_LENGTH_TRANSFER         0x4000
 
 #define USBD_CONTROL_MAX 64
 #define USBD_FS_BULK_MAX 64
@@ -126,17 +126,15 @@ typedef struct ep_queue_head {
 #define USBD_HS_ISO_MAX 1024
 
 struct usbd;
+struct usbd_ep;
 
 typedef struct usbd_req {
-	ep_td_struct *qtd;
-	int ep;
-	bool_t send;
+	struct usbd_ep *ep;
 	bool_t error;
 	uint32_t buffer_length;
 	void *buffer;
 	uint8_t small_buffer[USBD_CONTROL_MAX];
 	uint32_t io_done;
-	void *ctx;
 	void (*complete)(struct usbd *context, struct usbd_req *req);
 } usbd_req;
 
@@ -157,14 +155,15 @@ typedef struct usb_ctrlrequest {
 	uint16_t wLength;
 } __packed usb_ctrlrequest;
 
-#define USBD_ALIGNMENT DTD_ALIGNMENT
+#define USBD_ALIGNMENT USBD_TD_ALIGNMENT
 
 typedef enum {
-  USBD_SUCCESS,
-  USBD_BAD_ALIGNMENT,
-  USBD_PORT_CHANGE_ERROR,
-  USBD_USBSTS_ERROR,
-  USBD_SETUP_PACKET_UNSUPPORTED,
+	USBD_SUCCESS,
+	USBD_BAD_ALIGNMENT,
+	USBD_PORT_CHANGE_ERROR,
+	USBD_USBSTS_ERROR,
+	USBD_EP_UNCONFIGURED,
+	USBD_SETUP_PACKET_UNSUPPORTED,
 } usbd_status;
 
 typedef struct  {
@@ -186,11 +185,28 @@ typedef struct  {
 #define USB_DESC_TYPE_HID			0x21
 #define USB_DESC_TYPE_REPORT			0x22
 
+typedef enum usbd_ep_type {
+	EP_TYPE_NONE,
+	EP_TYPE_CTLR,
+	EP_TYPE_ISO,
+	EP_TYPE_BULK,
+	EP_TYPE_INTR,
+} usbd_ep_type;
+
+typedef struct usbd_ep {
+	int num;
+	bool_t send;
+	usbd_ep_type type;
+	usbd_td *qtd;
+} usbd_ep;
+
 typedef struct usbd {
-	ep_td_struct ep0_out_qtd;
-	ep_td_struct ep0_in_qtd;
-	usbd_req ep0_out;
-	usbd_req ep0_in;
+	usbd_td *qtds;
+	size_t qtd_count;
+	usbd_ep ep0_out;
+	usbd_ep ep0_in;
+	usbd_req ep0_out_req;
+	usbd_req ep0_in_req;
 	bool_t hs;
 	usbd_desc_table *descs;
 	uint16_t current_config;
@@ -198,22 +214,20 @@ typedef struct usbd {
  * User-servicable parts go below.
  */
 	void *ctx;
+	/*
+	 * Everything but EP0.
+	 */
+	usbd_ep **eps;
 	usbd_desc_table *fs_descs;
 	usbd_desc_table *hs_descs;
 	int (*port_reset)(struct usbd *);
 	usbd_status (*port_setup)(struct usbd *, int ep,
-			   usb_ctrlrequest *req);
+				  usb_ctrlrequest *req);
 } usbd;
 
-typedef enum usbd_ep_type {
-	EP_TYPE_NONE,
-	EP_TYPE_CTLR,
-	EP_TYPE_ISO,
-	EP_TYPE_BULK,
-	EP_TYPE_INTR,
-} usbd_ep_type_t;
-
-usbd_status usbd_init(usbd *context);
+usbd_status usbd_init(usbd *context,
+		      usbd_td *qtds,
+		      size_t qtd_count);
 usbd_status usbd_poll(usbd *context);
 
 #endif /* USBD_H */

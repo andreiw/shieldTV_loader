@@ -33,7 +33,29 @@ void *fb_base = VP(0x92ca6000);
 #define FB_COLS 1920
 #define FB_ROWS 1080
 
-static usbd uctx __align(USBD_ALIGNMENT);
+static usbd_td ep_qtds[2] __align(USBD_TD_ALIGNMENT);
+
+static usbd_ep bulk_ep1_out = {
+  .num = 1,
+  .send = false,
+  .type = EP_TYPE_BULK,
+};
+
+static usbd_ep bulk_ep1_in = {
+  .num = 1,
+  .send = true,
+  .type = EP_TYPE_BULK,
+};
+
+static usbd_ep *eps[] = {
+  &bulk_ep1_out,
+  &bulk_ep1_in,
+  NULL
+};
+
+static usbd uctx = {
+  .eps = eps,
+};
 
 static uint64_t
 memparse(const char *ptr, char **retptr)
@@ -171,7 +193,7 @@ cont:
 
 	uctx.fs_descs = descr_fs;
 	uctx.hs_descs = descr_hs;
-	usbd_init(&uctx);
+	usbd_init(&uctx, ep_qtds, ELES(ep_qtds));
 	while(1) {
 		usbd_poll(&uctx);
 	}
