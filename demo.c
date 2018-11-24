@@ -21,7 +21,6 @@
 #include <libfdt.h>
 #include <video_fb.h>
 #include <usbd.h>
-#include <usb_descriptors.h>
 
 /*
  * The 1.3 firmware default.
@@ -33,29 +32,7 @@ void *fb_base = VP(0x92ca6000);
 #define FB_COLS 1920
 #define FB_ROWS 1080
 
-static usbd_td ep_qtds[2] __align(USBD_TD_ALIGNMENT);
-
-static usbd_ep bulk_ep1_out = {
-  .num = 1,
-  .send = false,
-  .type = EP_TYPE_BULK,
-};
-
-static usbd_ep bulk_ep1_in = {
-  .num = 1,
-  .send = true,
-  .type = EP_TYPE_BULK,
-};
-
-static usbd_ep *eps[] = {
-  &bulk_ep1_out,
-  &bulk_ep1_in,
-  NULL
-};
-
-static usbd uctx = {
-  .eps = eps,
-};
+extern void fb_launch();
 
 static uint64_t
 memparse(const char *ptr, char **retptr)
@@ -165,14 +142,12 @@ void demo(void *fdt, uint32_t el)
 	 * Parse /chosen/bootargs for the real base
 	 * of tegra framebuffer.
 	 */
-	nodeoffset = fdt_path_offset(fdt,
-				     "/chosen");
+	nodeoffset = fdt_path_offset(fdt, "/chosen");
 	if (nodeoffset < 0) {
 		goto cont;
 	}
 
-	cmdline = fdt_getprop(fdt, nodeoffset,
-			      "bootargs", NULL);
+	cmdline = fdt_getprop(fdt, nodeoffset, "bootargs", NULL);
 	if (cmdline == NULL) {
 		goto cont;
 	}
@@ -190,11 +165,6 @@ cont:
 	printk("FB is at %p\n", fb_base);
 
 	arch_dump();
-
-	uctx.fs_descs = descr_fs;
-	uctx.hs_descs = descr_hs;
-	usbd_init(&uctx, ep_qtds, ELES(ep_qtds));
-	while(1) {
-		usbd_poll(&uctx);
-	}
+	fb_launch();
+	BUG();
 }

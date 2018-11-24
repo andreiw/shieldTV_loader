@@ -148,6 +148,7 @@ typedef struct usb_ctrlrequest {
 	uint8_t bRequestType;
 #define USB_REQ_SET_ADDRESS       0x5
 #define USB_REQ_GET_DESCRIPTOR    0x6
+#define USB_REQ_GET_CONFIGURATION 0x8
 #define USB_REQ_SET_CONFIGURATION 0x9
 	uint8_t bRequest;
 	uint16_t wValue;
@@ -164,6 +165,7 @@ typedef enum {
 	USBD_USBSTS_ERROR,
 	USBD_EP_UNCONFIGURED,
 	USBD_SETUP_PACKET_UNSUPPORTED,
+	USBD_CONFIG_UNSUPPORTED,
 } usbd_status;
 
 typedef struct  {
@@ -209,7 +211,7 @@ typedef struct usbd {
 	usbd_req ep0_in_req;
 	bool_t hs;
 	usbd_desc_table *descs;
-	uint16_t current_config;
+	uint8_t current_config;
 /*
  * User-servicable parts go below.
  */
@@ -220,14 +222,19 @@ typedef struct usbd {
 	usbd_ep **eps;
 	usbd_desc_table *fs_descs;
 	usbd_desc_table *hs_descs;
-	int (*port_reset)(struct usbd *);
+	usbd_status (*port_reset)(struct usbd *);
 	usbd_status (*port_setup)(struct usbd *, int ep,
 				  usb_ctrlrequest *req);
+	usbd_status (*set_config)(struct usbd *, uint8_t config);
 } usbd;
 
 usbd_status usbd_init(usbd *context,
 		      usbd_td *qtds,
 		      size_t qtd_count);
 usbd_status usbd_poll(usbd *context);
+void usbd_ep_enable(usbd *context, usbd_ep *ep_out, usbd_ep *ep_in);
+void usbd_ep_disable(usbd *context, usbd_ep *ep_out, usbd_ep *ep_in);
+void usbd_req_init(usbd_req *req, usbd_ep *ep);
+usbd_status usbd_req_submit(usbd *context, usbd_req *req);
 
 #endif /* USBD_H */
