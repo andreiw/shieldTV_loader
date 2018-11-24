@@ -21,6 +21,7 @@
 #include <libfdt.h>
 #include <video_fb.h>
 #include <usbd.h>
+#include <usb_descriptors.h>
 
 /*
  * The 1.3 firmware default.
@@ -167,6 +168,9 @@ cont:
 	printk("FB is at %p\n", fb_base);
 
 	arch_dump();
+
+	uctx.fs_descs = descr_fs;
+	uctx.hs_descs = descr_hs;
 	usbd_init(&uctx);
 	while(1) {
 		usbd_poll(&uctx);

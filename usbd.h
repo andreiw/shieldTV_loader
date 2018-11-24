@@ -17,6 +17,34 @@
  * MA 02111-1307 USA
  */
 
+/*
+ * Copyright (c) 2008, Google Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ * OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+ * AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
 #ifndef USBD_H
 #define USBD_H
 
@@ -89,19 +117,28 @@ typedef struct ep_queue_head {
 #define EP_QUEUE_FRINDEX_MASK                0x000007FF
 #define EP_MAX_LENGTH_TRANSFER               0x4000
 
+#define USBD_CONTROL_MAX 64
+#define USBD_FS_BULK_MAX 64
+#define USBD_HS_BULK_MAX 512
+#define USBD_FS_INTR_MAX 64
+#define USBD_HS_INTR_MAX 1024
+#define USBD_FS_ISO_MAX 1023
+#define USBD_HS_ISO_MAX 1024
+
+struct usbd;
+
 typedef struct usbd_req {
 	ep_td_struct *qtd;
 	int ep;
 	bool_t send;
 	bool_t error;
-	uint32_t packet_length;
 	uint32_t buffer_length;
 	void *buffer;
-	uint8_t small_buffer[64];
+	uint8_t small_buffer[USBD_CONTROL_MAX];
 	uint32_t io_done;
 	void *ctx;
-	int (*complete)(struct usbd_req *req);
-} usbd_req_t;
+	void (*complete)(struct usbd *context, struct usbd_req *req);
+} usbd_req;
 
 typedef struct usb_ctrlrequest {
 #define USB_REQ_DEV_R	0x80
@@ -130,16 +167,39 @@ typedef enum {
   USBD_SETUP_PACKET_UNSUPPORTED,
 } usbd_status;
 
+typedef struct  {
+	void *data;
+	uint16_t length;
+	uint16_t id;
+} usbd_desc_table;
+
+#define USB_DESC_ID(type,num) ((type << 8) | num)
+
+#define USB_DESC_TYPE_DEVICE			0x01
+#define USB_DESC_TYPE_CONFIGURATION		0x02
+#define USB_DESC_TYPE_STRING			0x03
+#define USB_DESC_TYPE_INTERFACE			0x04
+#define USB_DESC_TYPE_ENDPOINT			0x05
+#define USB_DESC_TYPE_DEVICE_QUALIFIER		0x06
+#define USB_DESC_TYPE_OTHER_SPEED_CONFIGURATION	0x07
+#define USB_DESC_TYPE_INTERFACE_POWER		0x08
+#define USB_DESC_TYPE_HID			0x21
+#define USB_DESC_TYPE_REPORT			0x22
+
 typedef struct usbd {
 	ep_td_struct ep0_out_qtd;
 	ep_td_struct ep0_in_qtd;
-	usbd_req_t ep0_out;
-	usbd_req_t ep0_in;
+	usbd_req ep0_out;
+	usbd_req ep0_in;
+	bool_t hs;
+	usbd_desc_table *descs;
+	uint16_t current_config;
+/*
+ * User-servicable parts go below.
+ */
 	void *ctx;
-	int max_control_packet;
-	int max_bulk_packet;
-	int max_interrupt_packet;
-	int max_iso_packet;
+	usbd_desc_table *fs_descs;
+	usbd_desc_table *hs_descs;
 	int (*port_reset)(struct usbd *);
 	usbd_status (*port_setup)(struct usbd *, int ep,
 			   usb_ctrlrequest *req);
