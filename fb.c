@@ -50,6 +50,8 @@
 #include <lmb.h>
 #include <usb_descriptors.h>
 
+#define EHCI_BASE 0x7d000000
+
 typedef struct fb_mem {
 	/*
 	 * 2 per EP0, 2 per EP1.
@@ -153,6 +155,7 @@ fb_launch(void)
 	lmb_dump_all(&lmb);
 
 	fb_ctx = VP(usb_dma_memory);
+	fb_ctx->uctx.ehci_udc_base = EHCI_BASE;
 	fb_ctx->uctx.ctx = fb_ctx;
 	fb_ctx->uctx.eps = fb_eps;
 	fb_ctx->uctx.fs_descs = descr_fs;

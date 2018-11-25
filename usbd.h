@@ -125,19 +125,6 @@ typedef struct usbd_qh {
 #define USBD_FS_ISO_MAX 1023
 #define USBD_HS_ISO_MAX 1024
 
-struct usbd;
-struct usbd_ep;
-
-typedef struct usbd_req {
-	struct usbd_ep *ep;
-	bool_t error;
-	uint32_t buffer_length;
-	void *buffer;
-	uint8_t small_buffer[USBD_CONTROL_MAX];
-	uint32_t io_done;
-	void (*complete)(struct usbd *context, struct usbd_req *req);
-} usbd_req;
-
 typedef struct usb_ctrlrequest {
 #define USB_REQ_DEV_R	0x80
 #define USB_REQ_DEV_W	0x00
@@ -160,10 +147,8 @@ typedef struct usb_ctrlrequest {
 
 typedef enum {
 	USBD_SUCCESS,
-	USBD_BAD_ALIGNMENT,
 	USBD_PORT_CHANGE_ERROR,
 	USBD_USBSTS_ERROR,
-	USBD_EP_UNCONFIGURED,
 	USBD_SETUP_PACKET_UNSUPPORTED,
 	USBD_CONFIG_UNSUPPORTED,
 } usbd_status;
@@ -187,6 +172,23 @@ typedef struct  {
 #define USB_DESC_TYPE_HID			0x21
 #define USB_DESC_TYPE_REPORT			0x22
 
+struct usbd;
+struct usbd_ep;
+
+typedef struct usbd_req {
+	bool_t error;
+	void *buffer;
+	uint32_t io_done;
+	uint32_t buffer_length;
+	void (*complete)(struct usbd *context, struct usbd_req *req);
+	/*
+	 * No user-servicable parts below, initialized by
+	 * usbd_req_init, which is called once during creation.
+	 */
+	uint8_t small_buffer[USBD_CONTROL_MAX];
+	struct usbd_ep *ep;
+} usbd_req;
+
 typedef enum usbd_ep_type {
 	EP_TYPE_NONE,
 	EP_TYPE_CTLR,
@@ -199,10 +201,31 @@ typedef struct usbd_ep {
 	int num;
 	bool_t send;
 	usbd_ep_type type;
+	/*
+	 * No user-servicable parts below, initialized by
+	 * usbd_init.
+	 */
 	usbd_td *qtd;
 } usbd_ep;
 
 typedef struct usbd {
+	void *ctx;
+	phys_addr_t ehci_udc_base;
+	/*
+	 * Everything but EP0 (which is already covered
+	 * by ep0_out/ep0_in).
+	 */
+	usbd_ep **eps;
+	usbd_desc_table *fs_descs;
+	usbd_desc_table *hs_descs;
+	usbd_status (*port_reset)(struct usbd *);
+	usbd_status (*port_setup)(struct usbd *, int ep,
+				  usb_ctrlrequest *req);
+	usbd_status (*set_config)(struct usbd *, uint8_t config);
+	/*
+	 * No user-servicable parts below, initialized by
+	 * usbd_init.
+	 */
 	usbd_td *qtds;
 	size_t qtd_count;
 	usbd_ep ep0_out;
@@ -212,20 +235,6 @@ typedef struct usbd {
 	bool_t hs;
 	usbd_desc_table *descs;
 	uint8_t current_config;
-/*
- * User-servicable parts go below.
- */
-	void *ctx;
-	/*
-	 * Everything but EP0.
-	 */
-	usbd_ep **eps;
-	usbd_desc_table *fs_descs;
-	usbd_desc_table *hs_descs;
-	usbd_status (*port_reset)(struct usbd *);
-	usbd_status (*port_setup)(struct usbd *, int ep,
-				  usb_ctrlrequest *req);
-	usbd_status (*set_config)(struct usbd *, uint8_t config);
 } usbd;
 
 usbd_status usbd_init(usbd *context,

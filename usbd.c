@@ -48,7 +48,8 @@
 #include <lib.h>
 #include <usbd.h>
 
-#define EHCI_BASE UN(0x7d000000)
+#define MAX_DMA_ADDR 0xffffffff
+#define EHCI_BASE    (context->ehci_udc_base)
 
 #define QH_OFFSET_OUT(n) (EHCI_BASE + 0x1000 + (UN(n) * 0x80))
 #define QH_OFFSET_IN(n)  (EHCI_BASE + 0x1000 + (UN(n) * 0x80) + 0x40)
@@ -129,7 +130,9 @@ usbd_req_init(usbd_req *req,
 {
 	memset(req, 0, sizeof(*req));
 	req->ep = ep;
+
 	req->buffer = req->small_buffer;
+	BUG_ON (UN(req->buffer) > MAX_DMA_ADDR);
 }
 
 static usbd_ep *
@@ -173,6 +176,7 @@ usbd_init(usbd *context,
 
 	for (i = 0; i < qtd_count; i++) {
 		BUG_ON ((UN(qtds + i) & (USBD_TD_ALIGNMENT - 1)) != 0);
+		BUG_ON (UN(qtds + i) > MAX_DMA_ADDR);
 	}
 
 	context->qtds = qtds;
@@ -542,6 +546,9 @@ usbd_ep0_setup(usbd *context,
 	case ST(USB_REQ_DEV_W, USB_REQ_SET_CONFIGURATION):
 		if (request->wValue != context->current_config) {
 			if (context->set_config != NULL) {
+				/*
+				 * Could return USBD_CONFIG_UNSUPPORTED.
+				 */
 				status = context->set_config(context,
 							     (uint8_t) request->wValue);
 				if (status != USBD_SUCCESS) {
