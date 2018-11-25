@@ -29,16 +29,24 @@
 void printk(char *fmt, ...);
 
 #define BUG() do {						\
-		printk("Panic at %s:%u\n",			\
-		       __FILE__, __LINE__);			\
-		while (1);                                      \
+		printk("%s:%u BUG ()\n", __FILE__, __LINE__);	\
+		while (1);					\
 	} while(0);
 
-#define BUG_ON(condition) do {					\
-		if (unlikely(condition)) {			\
-			printk("'" S(condition) "' failed\n");	\
-			BUG();					\
-		}						\
+#define BUG_ON(condition) do {						\
+		if (unlikely(condition)) {				\
+			printk("%s:%u BUG (%s)\n", __FILE__, __LINE__, \
+			       S(condition));				\
+			while (1);					\
+		}							\
+	} while(0)
+
+#define BUG_ON_EX(condition, fmt, ...) do {				\
+		if (unlikely(condition)) {				\
+			printk("%s:%u BUG (%s): " fmt "\n", __FILE__, __LINE__, \
+			       S(condition), ## __VA_ARGS__);		\
+			while (1);					\
+		}							\
 	} while(0)
 
 #endif /* LIB_H */

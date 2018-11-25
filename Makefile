@@ -36,7 +36,7 @@ $(TARGET): $(TARGET).bin
 $(TARGET).bin: $(TARGET).elf
 	$(OBJCOPY) -v -O binary $< $@
 
-$(TARGET).elf: start.o demo.o string.o fdt.o ctype.o fdt_ro.o fdt_strerror.o vsprintf.o cfb_console.o usbd.o lib.o fb.o
+$(TARGET).elf: start.o demo.o string.o fdt.o ctype.o fdt_ro.o fdt_strerror.o vsprintf.o cfb_console.o usbd.o lib.o fb.o lmb.o
 	$(LD) -T boot.lds -Ttext=$(TEXT_BASE) $(LDFLAGS) $^ -o $@
 
 clean:

@@ -28,6 +28,7 @@
 typedef uint64_t size_t;
 typedef uint64_t ptrdiff_t;
 typedef _Bool bool_t;
+typedef uint64_t phys_addr_t;
 
 #define min(x,y) ({				\
 			typeof(x) _x = (x);	\

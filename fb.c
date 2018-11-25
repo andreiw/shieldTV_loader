@@ -47,30 +47,36 @@
 
 #include <lib.h>
 #include <usbd.h>
+#include <lmb.h>
 #include <usb_descriptors.h>
 
-static usbd_td fb_ep_qtds[4] __align(USBD_TD_ALIGNMENT);
+typedef struct fb_mem {
+	/*
+	 * 2 per EP0, 2 per EP1.
+	 */
+	usbd_td qtds[4];
+	usbd uctx;
+	usbd_req ep1_out_req;
+	usbd_req ep1_in_req;
+} fb_mem;
 
 static usbd_ep fb_ep1_out = {
-  .num = 1,
-  .send = false,
-  .type = EP_TYPE_BULK,
+	.num = 1,
+	.send = false,
+	.type = EP_TYPE_BULK,
 };
 
 static usbd_ep fb_ep1_in = {
-  .num = 1,
-  .send = true,
-  .type = EP_TYPE_BULK,
+	.num = 1,
+	.send = true,
+	.type = EP_TYPE_BULK,
 };
 
 static usbd_ep *fb_eps[] = {
-  &fb_ep1_out,
-  &fb_ep1_in,
-  NULL
+	&fb_ep1_out,
+	&fb_ep1_in,
+	NULL
 };
-
-static usbd_req fb_ep1_out_req;
-static usbd_req fb_ep1_in_req;
 
 static void fb_rx_cmd(struct usbd *context);
 
@@ -84,10 +90,12 @@ fb_tx_status_complete(usbd *context,
 static void
 fb_tx_status(struct usbd *context, char *status)
 {
-	fb_ep1_in_req.buffer_length = strlen(status) + 1;
-	memcpy(fb_ep1_in_req.buffer, status, strlen(status) + 1);
-	fb_ep1_in_req.complete = fb_tx_status_complete;
-	usbd_req_submit(context, &fb_ep1_in_req);
+	fb_mem *fb_ctx = context->ctx;
+
+	fb_ctx->ep1_in_req.buffer_length = strlen(status) + 1;
+	memcpy(fb_ctx->ep1_in_req.buffer, status, strlen(status) + 1);
+	fb_ctx->ep1_in_req.complete = fb_tx_status_complete;
+	usbd_req_submit(context, &(fb_ctx->ep1_in_req));
 }
 
 static void
@@ -103,9 +111,13 @@ fb_rx_cmd_complete(usbd *context,
 static void
 fb_rx_cmd(struct usbd *context)
 {
-	fb_ep1_out_req.buffer_length = 64;
-	fb_ep1_out_req.complete = fb_rx_cmd_complete;
-	usbd_req_submit(context, &fb_ep1_out_req);
+	fb_mem *fb_ctx = context->ctx;
+
+	C_ASSERT(sizeof(fb_ctx->ep1_out_req.small_buffer) >= 64);
+	fb_ctx->ep1_out_req.buffer = fb_ctx->ep1_out_req.small_buffer;
+	fb_ctx->ep1_out_req.buffer_length = 64;
+	fb_ctx->ep1_out_req.complete = fb_rx_cmd_complete;
+	usbd_req_submit(context, &(fb_ctx->ep1_out_req));
 }
 
 static usbd_status
@@ -126,25 +138,34 @@ fb_set_config(struct usbd *context,
 	return USBD_SUCCESS;
 }
 
-static usbd fb_uctx = {
-	.eps = fb_eps,
-	.fs_descs = descr_fs,
-	.hs_descs = descr_hs,
-	.set_config = fb_set_config,
-};
-
 void
 fb_launch(void)
 {
+	fb_mem *fb_ctx;
 	usbd_status usbd_stat;
+	phys_addr_t usb_dma_memory;
 
-	usbd_stat = usbd_init(&fb_uctx, fb_ep_qtds, ELES(fb_ep_qtds));
+	usb_dma_memory = lmb_alloc_base(&lmb, sizeof(fb_mem),
+					USBD_TD_ALIGNMENT,
+					LMB_ALLOC_32BIT, LMB_BOOT,
+					LMB_TAG("UDMA"));
+
+	lmb_dump_all(&lmb);
+
+	fb_ctx = VP(usb_dma_memory);
+	fb_ctx->uctx.ctx = fb_ctx;
+	fb_ctx->uctx.eps = fb_eps;
+	fb_ctx->uctx.fs_descs = descr_fs;
+	fb_ctx->uctx.hs_descs = descr_hs;
+	fb_ctx->uctx.set_config = fb_set_config;
+
+	usbd_stat = usbd_init(&(fb_ctx->uctx), fb_ctx->qtds, ELES(fb_ctx->qtds));
 	BUG_ON (usbd_stat != USBD_SUCCESS);
 
-	usbd_req_init(&fb_ep1_out_req, &fb_ep1_out);
-	usbd_req_init(&fb_ep1_in_req, &fb_ep1_in);
+	usbd_req_init(&(fb_ctx->ep1_out_req), &fb_ep1_out);
+	usbd_req_init(&(fb_ctx->ep1_in_req), &fb_ep1_in);
 
 	while(1) {
-		usbd_poll(&fb_uctx);
+		usbd_poll(&(fb_ctx->uctx));
 	}
 }
