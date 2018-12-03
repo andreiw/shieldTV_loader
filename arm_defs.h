@@ -174,11 +174,11 @@ _IN32(const volatile void *addr)
 }
 #define IN32(x) _IN32(VP(x))
 
-static inline uint32_t
+static inline uint64_t
 _IN64(const volatile void *addr)
 {
 	uint64_t val;
-	asm volatile("ldr %0, [%1]" : "=r" (val) : "r" (addr));
+	asm volatile("ldr %x0, [%1]" : "=r" (val) : "r" (addr));
 	DSB_LD();
 	return val;
 }
@@ -212,8 +212,8 @@ static inline void
 _OUT64(uint64_t val, volatile void *addr)
 {
 	DSB_ST();
-	asm volatile("str %0, [%1]" : : "r" (val), "r" (addr));
+	asm volatile("str %x0, [%1]" : : "r" (val), "r" (addr));
 }
-#define OUT64(val, addr) _OUT8((uint64_t) (val), VP(addr))
+#define OUT64(val, addr) _OUT64((uint64_t) (val), VP(addr))
 
 #endif /* ARM_DEFS_H */

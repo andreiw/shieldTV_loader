@@ -245,5 +245,6 @@ void usbd_ep_enable(usbd *context, usbd_ep *ep_out, usbd_ep *ep_in);
 void usbd_ep_disable(usbd *context, usbd_ep *ep_out, usbd_ep *ep_in);
 void usbd_req_init(usbd_req *req, usbd_ep *ep);
 usbd_status usbd_req_submit(usbd *context, usbd_req *req);
+void usbd_req_cancel(usbd *context, usbd_req *req);
 
 #endif /* USBD_H */

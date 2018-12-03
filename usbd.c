@@ -202,9 +202,6 @@ usbd_init(usbd *context,
 			BUG_ON (qtd_count == 0);
 			ep->qtd = qtds++;
 			qtd_count--;
-			/* printk("assigned qtd %p to EP%u %s %s\n", ep->qtd, */
-			/*        ep->num, usbd_ep_type_names[ep->type], */
-			/*        in ? "in" : "out"); */
 		}
 	}
 
@@ -430,6 +427,33 @@ usbd_req_complete(usbd *context,
 	req->complete(context, req);
 }
 
+void
+usbd_req_cancel(usbd *context,
+                usbd_req *req)
+{
+	int ix;
+	usbd_ep *ep = req->ep;
+
+	BUG_ON(ep == NULL);
+	ix = ep->num;
+
+	if (ep->send) {
+		ix += MAX_EPS;
+	}
+
+	if (usbd_reqs[ix] != req) {
+		return;
+	}
+
+	usbd_hw_ep_flush(context, ep->num, ep->send);
+
+	usbd_reqs[ix] = NULL;
+	req->error = true;
+	if (req->complete != NULL) {
+		req->complete(context, req);
+	}
+}
+
 usbd_status
 usbd_req_submit(usbd *context,
 		usbd_req *req)
@@ -651,7 +675,6 @@ usbd_poll(usbd *context)
 		} else if ((status & USBSTS_RESET) != 0) {
 			return usbd_port_reset(context);
 		} else if ((status && USBSTS_PORT_CHANGE) != 0) {
-
 			return usbd_port_change(context);
 		} else {
 			printk("USB error 0x%x\n", status);
