@@ -18,6 +18,7 @@
  */
 
 .globl asm_start
+.globl smc_call        
 
 /*
  * x0 contains the FDT blob PA
@@ -74,9 +75,20 @@ clear_bss:
         str     xzr, [x1], #8
         b       1b
 go_to_c:
-        bl      demo // x0 = fdt
+        bl      main // x0 = fdt
 1:      b       1b
 
+smc_call:
+        str   x0, [sp, #-16]!   // remember the inout array
+        ldp   x6, x7, [x0, #48]
+        ldp   x4, x5, [x0, #32]
+        ldp   x2, x3, [x0, #16]
+        ldp   x0, x1, [x0, #0]
+        smc   #0
+        ldr   x9, [sp], #16     // x9 <- inout array address
+        stp   x2, x3, [x9, #16] // SMC calls can return up
+        stp   x0, x1, [x9, #0]  // to 4 values.
+        ret
 .section .data
 .align 4
 stack:

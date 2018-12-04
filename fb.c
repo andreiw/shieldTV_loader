@@ -18,6 +18,9 @@
  */
 
 /*
+ * Gonna keep this here but I don't really think there's anything
+ * here from any Google fastboot implementation, lol:
+ *
  * Copyright (c) 2008, Google Inc.
  * All rights reserved.
  *
@@ -49,10 +52,11 @@
 #include <usbd.h>
 #include <lmb.h>
 #include <usb_descriptors.h>
+#include <tegra.h>
 
-#define EHCI_BASE 0x7d000000
 #define FB_BAD_COMMAND "FAILBad command"
 #define FB_UNKNOWN_COMMAND "FAILUnknown command"
+#define FB_FAIL_COMMAND "FAILFailed command"
 #define FB_OK NULL
 
 typedef char *fb_status;
@@ -122,10 +126,41 @@ fb_end_command(struct usbd *context, char *status)
 		status = "OKAY";
 	}
 
+	fb_ctx->ep1_in_req.buffer = fb_ctx->ep1_in_req.small_buffer;
 	fb_ctx->ep1_in_req.buffer_length = strlen(status) + 1;
+	BUG_ON (fb_ctx->ep1_in_req.buffer_length >
+		sizeof(fb_ctx->ep1_in_req.small_buffer));
 	memcpy(fb_ctx->ep1_in_req.buffer, status, strlen(status) + 1);
 	fb_ctx->ep1_in_req.complete = fb_end_command_complete;
 	usbd_req_submit(context, &(fb_ctx->ep1_in_req));
+}
+
+static void
+fb_end_command_with_info_complete(usbd *context,
+				 usbd_req *req)
+{
+	fb_end_command(context, FB_OK);
+}
+
+static void
+fb_end_command_with_info(struct usbd *context, char *fmt, ...)
+{
+	va_list list;
+	fb_mem *fb_ctx = context->ctx;
+
+	va_start(list, fmt);
+	fb_ctx->ep1_in_req.buffer = fb_ctx->ep1_in_req.small_buffer;
+
+	memcpy(fb_ctx->ep1_in_req.buffer, "INFO", 4);
+	fb_ctx->ep1_in_req.buffer_length =
+		vscnprintf(fb_ctx->ep1_in_req.buffer + 4,
+			   sizeof(fb_ctx->ep1_in_req.small_buffer) - 4,
+			   fmt, list) + 4;
+
+	fb_ctx->ep1_in_req.complete = fb_end_command_with_info_complete;
+	usbd_req_submit(context, &(fb_ctx->ep1_in_req));
+
+	va_end(list);
 }
 
 static void
@@ -199,7 +234,7 @@ fb_oem_cmd_peek(usbd *context,
 	fb_cmd_peek *peek = &fb_ctx->peek;
 
 	peek->addr = simple_strtoull(cmd, &cmd, 0);
-	if (cmd[0] != ' ') {
+	if (*cmd != ' ') {
 		return FB_BAD_COMMAND;
 	}
 	cmd++;
@@ -218,12 +253,16 @@ fb_oem_cmd_peek(usbd *context,
 	}
 
 	peek->items = 1;
-	if (cmd[0] == ' ') {
+	if (*cmd == ' ') {
 		cmd++;
 		/*
 		 * Have items.
 		 */
-		peek->items = simple_strtoull(cmd, NULL, 0);
+		peek->items = simple_strtoull(cmd, &cmd, 0);
+	}
+
+	if (*cmd != '\0') {
+		return FB_BAD_COMMAND;
 	}
 
 	C_ASSERT(sizeof(fb_ctx->ep1_in_req.small_buffer) >= 64);
@@ -242,7 +281,7 @@ fb_oem_cmd_poke(usbd *context,
 	phys_addr_t addr;
 
 	addr = simple_strtoull(cmd, &cmd, 0);
-	if (cmd[0] != ' ') {
+	if (*cmd != ' ') {
 		return FB_BAD_COMMAND;
 	}
 	cmd++;
@@ -296,20 +335,191 @@ fb_oem_cmd_poke(usbd *context,
 }
 
 static fb_status
-fb_oem_cmd(usbd *context,
+fb_oem_cmd_echo(usbd *context,
+		char *cmd)
+{
+	printk("%s\n", cmd);
+	fb_end_command(context, FB_OK);
+	return FB_OK;
+}
+
+static fb_status
+fb_oem_cmd_alloc_ex(usbd *context,
+		    char *cmd,
+		    phys_addr_t max_addr)
+{
+	size_t size;
+	size_t align;
+	lmb_type_t type;
+	phys_addr_t addr;
+
+	size = simple_strtoull(cmd, &cmd, 0);
+	if (*cmd != ' ') {
+		return FB_BAD_COMMAND;
+	}
+	cmd++;
+
+	align = simple_strtoull(cmd, &cmd, 0);
+
+	type = LMB_BOOT;
+	if (*cmd == ' ') {
+		cmd++;
+
+		if (!memcmp(cmd, "boot", sizeof("boot"))) {
+			type = LMB_BOOT;
+		} else if (!memcmp(cmd, "runtime", sizeof("runtime"))) {
+			/*
+			 * Today, there is no difference between boot and
+			 * runtime allocations. Tomorrow? We'll see.
+			 */
+			type = LMB_RUNTIME;
+		} else {
+			return FB_BAD_COMMAND;
+		}
+	}
+
+	addr = lmb_alloc_base(&lmb, size, align, max_addr,
+			      type, LMB_TAG("FBRQ"));
+	if (addr == 0) {
+		return FB_FAIL_COMMAND;
+	}
+
+	fb_end_command_with_info(context, "0x%lx", addr);
+	return FB_OK;
+}
+
+static fb_status
+fb_oem_cmd_alloc(usbd *context,
+		 char *cmd)
+{
+	return fb_oem_cmd_alloc_ex(context, cmd, LMB_ALLOC_ANYWHERE);
+}
+
+static fb_status
+fb_oem_cmd_alloc32(usbd *context,
+		   char *cmd)
+{
+	return fb_oem_cmd_alloc_ex(context, cmd, LMB_ALLOC_32BIT);
+}
+
+static fb_status
+fb_oem_cmd_free(usbd *context,
+		char *cmd)
+{
+	phys_addr_t addr;
+	size_t size;
+	size_t align;
+
+	addr = simple_strtoull(cmd, &cmd, 0);
+	if (*cmd != ' ') {
+		return FB_BAD_COMMAND;
+	}
+	cmd++;
+
+	size = simple_strtoull(cmd, &cmd, 0);
+	if (*cmd != ' ') {
+		return FB_BAD_COMMAND;
+	}
+	cmd++;
+
+	align = simple_strtoull(cmd, &cmd, 0);
+	if (*cmd != '\0') {
+		return FB_BAD_COMMAND;
+	}
+
+	lmb_free(&lmb, addr, size, align);
+
+	fb_end_command(context, FB_OK);
+	return FB_OK;
+}
+
+static fb_status
+fb_oem_cmd_smccc(usbd *context,
+		 char *cmd)
+{
+	int i;
+	uint64_t inout[8];
+	extern void smc_call(uint64_t *inout);
+
+	memset(inout, 0, sizeof(inout));
+	for (i = 0; i < ELES(inout); i++) {
+		inout[i] = simple_strtoull(cmd, &cmd, 0);
+		if (*cmd == '\0') {
+			break;
+		}
+
+		if (*cmd != ' ') {
+			return FB_BAD_COMMAND;
+		}
+		cmd++;
+	}
+
+	smc_call(inout);
+	fb_end_command_with_info(context, "0x%lx 0x%lx 0x%lx 0x%lx",
+				 inout[0], inout[1], inout[2], inout[3]);
+
+	return FB_OK;
+}
+
+static fb_status
+fb_cmd_reboot(usbd *context,
+	      reboot_type type)
+{
+	fb_end_command(context, FB_OK);
+
+	tegra_reboot(type);
+	return FB_OK;
+}
+
+static fb_status
+fb_oem_cmd_reboot(usbd *context,
+		  char *cmd)
+{
+	uint32_t s;
+
+	if (!strcmp(cmd, "normal")) {
+		return fb_cmd_reboot(context, REBOOT_NORMAL);
+	} else if (!strcmp(cmd, "bootloader")) {
+		return fb_cmd_reboot(context, REBOOT_BOOTLOADER);
+	} else if (!strcmp(cmd, "rcm")) {
+		return fb_cmd_reboot(context, REBOOT_RCM);
+	} else if (!strcmp(cmd, "recovery")) {
+		return fb_cmd_reboot(context, REBOOT_RECOVERY);
+	}
+
+	s = simple_strtoull(cmd, &cmd, 0);
+	if (*cmd != '\0') {
+		return FB_BAD_COMMAND;
+	}
+
+	return fb_cmd_reboot(context, s);
+}
+
+static fb_status
+fb_cmd_oem(usbd *context,
 	   char *cmd)
 {
 	fb_status status = FB_UNKNOWN_COMMAND;
 
-#define PEEK "peek "
-#define POKE "poke "
-	if (!memcmp(cmd, PEEK, sizeof(PEEK) - 1)) {
-		status = fb_oem_cmd_peek(context, cmd + sizeof(PEEK) - 1);
-	} else if (!memcmp(cmd, POKE, sizeof(POKE) - 1)) {
-		status = fb_oem_cmd_poke(context, cmd + sizeof(POKE) - 1);
+#define CMD_LIST					\
+	CMD(peek)					\
+	CMD(poke)					\
+	CMD(echo)					\
+	CMD(alloc)					\
+	CMD(alloc32)					\
+	CMD(free)					\
+	CMD(smccc)					\
+	CMD(reboot)					\
+
+#define CMD(x) else if (!memcmp(cmd, S(x)" ", sizeof(S(x)" ") - 1)) {	\
+		status = fb_oem_cmd_##x(context, cmd + sizeof(S(x)" ") - 1); \
 	}
-#undef PEEK
-#undef POKE
+
+	if (0) {
+	} CMD_LIST;
+
+#undef CMD
+#undef CMD_LIST
 
 	return status;
 }
@@ -351,12 +561,30 @@ fb_rx_cmd_complete(usbd *context,
 	 * For ease of parsing, consider this to be an ASCIIZ buffer.
 	 */
 	cbuf[sizeof(fb_ctx->ep1_out_req.small_buffer) - 1] = '\0';
-#define OEM "oem "
-		if (!memcmp(req->buffer, OEM, sizeof(OEM) - 1)) {
-			status = fb_oem_cmd(context,
-				((char *) req->buffer) + sizeof(OEM) - 1);
+
+#define CMD_LIST				\
+	CMD(oem)				\
+	CMD_NO_PARAM(reboot)				\
+
+#define CMD(x) else  \
+		}
+
+#define CMD_NO_PARAM(x) else if (!memcmp(req->buffer, S(x), sizeof(S(x)) - 1)) { \
+			status = fb_cmd_##x(context,((char *) req->buffer) + sizeof(S(x)) - 1); \
+		}
+
+	if (!memcmp(req->buffer, "oem ", sizeof("oem ") - 1)) {
+		status = fb_cmd_oem(context,
+				    ((char *) req->buffer) + sizeof("oem ") - 1);
+	} else if (!strcmp(req->buffer, "reboot")) {
+		status = fb_cmd_reboot(context, REBOOT_NORMAL);
+	} else if (!strcmp(req->buffer, "reboot-bootloader")) {
+		status = fb_cmd_reboot(context, REBOOT_BOOTLOADER);
 	}
-#undef OEM
+
+#undef CMD
+#undef CMD_NO_PARAM
+#undef CMD_LIST
 
 	if (status == FB_OK) {
 		/*
@@ -419,7 +647,7 @@ fb_launch(void)
 
 	fb_ctx = VP(usb_dma_memory);
 	memset(fb_ctx, 0, sizeof(fb_mem));
-	fb_ctx->uctx.ehci_udc_base = EHCI_BASE;
+	fb_ctx->uctx.ehci_udc_base = TEGRA_EHCI_BASE;
 	fb_ctx->uctx.ctx = fb_ctx;
 	fb_ctx->uctx.eps = fb_eps;
 	fb_ctx->uctx.fs_descs = descr_fs;

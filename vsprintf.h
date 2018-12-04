@@ -17,6 +17,7 @@ struct va_format {
 unsigned long long simple_strtoull(const char *cp, char **endp, unsigned int base);
 
 int scnprintf(char *buf, size_t size, const char *fmt, ...);
+int vscnprintf(char *buf, size_t size, const char *fmt, va_list args);
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args);
 
 #endif /* VSPRINTF_H */

@@ -626,12 +626,14 @@ usbd_port_setup(usbd *context,
 		}
 
 		if (setup_status != USBD_SUCCESS) {
+#ifdef DEBUG
 			printk("Stalling bRT %u bR %u wV 0x%x wI 0x%x wL 0x%x\n",
 			       request.bRequestType,
 			       request.bRequest,
 			       request.wValue,
 			       request.wIndex,
 			       request.wLength);
+#endif /* DEBUG */
 			usbd_hw_ep_stall(context, ep_ix);
 		}
 	}

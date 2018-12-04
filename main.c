@@ -183,7 +183,6 @@ parse_and_reserve_range(const char *cmdline,
 	size_t s;
 
 	if (parse_range(cmdline, range_name, &b, &s)) {
-		printk("0x%lx - 0x%lx\n", b, s);
 		lmb_reserve(&lmb, b, s, type, tag);
 
 		if (base != NULL) {
@@ -218,7 +217,7 @@ fdt_get_cmdline(void *fdt)
 }
 
 void
-demo(void *fdt, uint32_t el)
+main(void *fdt, uint32_t el)
 {
 	int node;
 	int resv_count;
@@ -246,6 +245,7 @@ demo(void *fdt, uint32_t el)
 	}
 
 	video_init(VP(fb_base));
+	printk("ShieldTV Loader (https://github.com/andreiw/shieldTV_loader) - ");
 	arch_dump();
 
 	lmb_init(&lmb);
