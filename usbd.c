@@ -211,6 +211,9 @@ usbd_init(usbd *context,
 	context->hs = false;
 	context->descs = NULL;
 	context->current_config = 0;
+	if (context->set_config != NULL) {
+		context->set_config(context, context->current_config);
+	}
 
 	OUT32(USBCMD_ITC_DEFAULT | USBCMD_RESET, USBCMD);
 	while((IN32(USBCMD) & USBCMD_RESET) != 0);
@@ -222,7 +225,15 @@ usbd_init(usbd *context,
 
 	OUT32(QH_OFFSET_OUT(0), USBLISTADR);
 	OUT32(USBCMD_ITC_DEFAULT | USBCMD_RUN, USBCMD);
+
 	return USBD_SUCCESS;
+}
+
+void
+usbd_fini(usbd *context)
+{
+	OUT32(USBCMD_ITC_DEFAULT | USBCMD_RESET, USBCMD);
+	while((IN32(USBCMD) & USBCMD_RESET) != 0);
 }
 
 static void
@@ -449,9 +460,11 @@ usbd_req_cancel(usbd *context,
 
 	usbd_reqs[ix] = NULL;
 	req->error = true;
+	req->cancel = true;
 	if (req->complete != NULL) {
 		req->complete(context, req);
 	}
+	req->cancel = false;
 }
 
 usbd_status
@@ -475,7 +488,8 @@ usbd_req_submit(usbd *context,
 		qh = (usbd_qh *) QH_OFFSET_OUT(ep->num);
 	}
 
-	BUG_ON(usbd_reqs[ix] != NULL);
+	BUG_ON_EX(usbd_reqs[ix] != NULL, "already in flight for EP%u %s",
+		  ep->num, ep->send ? "in" : "out");
 
 	usbd_hw_ep_flush(context, ep->num, ep->send);
 

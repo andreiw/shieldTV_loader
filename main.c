@@ -23,7 +23,7 @@
 #include <usbd.h>
 #include <lmb.h>
 
-extern void fb_launch();
+extern void fb_launch(void *fdt);
 
 struct lmb lmb;
 
@@ -318,6 +318,6 @@ main(void *fdt, uint32_t el)
 		lmb_reserve(&lmb, base, size, LMB_BOOT, LMB_TAG("RESV"));
 	}
 
-	fb_launch();
+	fb_launch(fdt);
 	BUG();
 }

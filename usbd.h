@@ -177,6 +177,7 @@ struct usbd_ep;
 
 typedef struct usbd_req {
 	bool_t error;
+	bool_t cancel;
 	void *buffer;
 	uint32_t io_done;
 	uint32_t buffer_length;
@@ -237,9 +238,8 @@ typedef struct usbd {
 	uint8_t current_config;
 } usbd;
 
-usbd_status usbd_init(usbd *context,
-		      usbd_td *qtds,
-		      size_t qtd_count);
+usbd_status usbd_init(usbd *context, usbd_td *qtds,size_t qtd_count);
+void usbd_fini(usbd *context);
 usbd_status usbd_poll(usbd *context);
 void usbd_ep_enable(usbd *context, usbd_ep *ep_out, usbd_ep *ep_in);
 void usbd_ep_disable(usbd *context, usbd_ep *ep_out, usbd_ep *ep_in);

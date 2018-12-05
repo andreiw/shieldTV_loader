@@ -54,21 +54,54 @@
 #include <usb_descriptors.h>
 #include <tegra.h>
 
+#define DOWNLOAD_ALIGNMENT 0x100000
+
+#define BOOT_MAGIC "ANDROID!"
+#define BOOT_MAGIC_SIZE 8
+#define BOOT_NAME_SIZE 16
+#define BOOT_ARGS_SIZE 512
+#define BOOT_EXTRA_ARGS_SIZE 1024
+
 #define FB_BAD_COMMAND "FAILBad command"
 #define FB_UNKNOWN_COMMAND "FAILUnknown command"
-#define FB_FAIL_COMMAND "FAILFailed command"
+#define FB_OOM "FAILOut of memory"
+#define FB_NOT_DOWNLOADED "FAILNothing downloaded"
+
 #define FB_OK NULL
+
+typedef struct boot_img {
+	unsigned char magic[BOOT_MAGIC_SIZE];
+	unsigned kernel_size;  /* size in bytes */
+	unsigned kernel_addr;  /* physical load addr */
+	unsigned ramdisk_size; /* size in bytes */
+	unsigned ramdisk_addr; /* physical load addr */
+	unsigned second_size;  /* size in bytes */
+	unsigned second_addr;  /* physical load addr */
+	unsigned tags_addr;    /* physical addr for kernel tags */
+	unsigned page_size;    /* flash page size we assume */
+	unsigned unused[2];    /* future expansion: should be 0 */
+	unsigned char name[BOOT_NAME_SIZE]; /* asciiz product name */
+	unsigned char cmdline[BOOT_ARGS_SIZE];
+	unsigned id[8]; /* timestamp / checksum / sha1 / etc */
+	/* Supplemental command line data; kept here to maintain
+	 * binary compatibility with older versions of mkbootimg */
+	unsigned char extra_cmdline[BOOT_EXTRA_ARGS_SIZE];
+} boot_img;
 
 typedef char *fb_status;
 
-typedef struct fb_cmd_peek {
+typedef struct fb_reboot_state {
+	reboot_type type;
+} fb_reboot_state;
+
+typedef struct fb_peek_state {
 	phys_addr_t addr;
 	size_t access;
 	size_t items;
 	bool_t ascii;
 	char *buffer;
 	size_t buffer_len;
-} fb_cmd_peek;
+} fb_peek_state;
 
 typedef struct fb_mem {
 	/*
@@ -79,12 +112,18 @@ typedef struct fb_mem {
 	usbd_req ep1_out_req;
 	usbd_req ep1_in_req;
 	bool_t in_command;
+	uint8_t *last_loaded;
+	size_t load_size;
+	size_t load_rem;
+	size_t load_align;
 	/*
 	 * Command states.
 	 */
 	union {
-		fb_cmd_peek peek;
+		fb_peek_state peek;
+		fb_reboot_state reboot;
 	};
+	void *fdt;
 } fb_mem;
 
 static usbd_ep fb_ep1_out = {
@@ -105,6 +144,9 @@ static usbd_ep *fb_eps[] = {
 	NULL
 };
 
+static void fb_rx_data(struct usbd *context,
+		       usbd_req *unused);
+
 static void fb_rx_cmd(struct usbd *context,
 		      usbd_req *unused);
 
@@ -113,31 +155,41 @@ static void
 fb_end_command_complete(usbd *context,
 			usbd_req *req)
 {
-	fb_mem *fb_ctx = context->ctx;
-	fb_ctx->in_command = false;
+	fb_mem *fb = context->ctx;
+	fb->in_command = false;
 }
 
 static void
-fb_end_command(struct usbd *context, char *status)
+fb_end_command_with_custom_complete(struct usbd *context,
+				    char *status,
+				    void (*complete)(usbd *, usbd_req *))
 {
-	fb_mem *fb_ctx = context->ctx;
+	fb_mem *fb = context->ctx;
 
 	if (status == FB_OK) {
 		status = "OKAY";
 	}
 
-	fb_ctx->ep1_in_req.buffer = fb_ctx->ep1_in_req.small_buffer;
-	fb_ctx->ep1_in_req.buffer_length = strlen(status) + 1;
-	BUG_ON (fb_ctx->ep1_in_req.buffer_length >
-		sizeof(fb_ctx->ep1_in_req.small_buffer));
-	memcpy(fb_ctx->ep1_in_req.buffer, status, strlen(status) + 1);
-	fb_ctx->ep1_in_req.complete = fb_end_command_complete;
-	usbd_req_submit(context, &(fb_ctx->ep1_in_req));
+	fb->ep1_in_req.buffer = fb->ep1_in_req.small_buffer;
+	fb->ep1_in_req.buffer_length = strlen(status) + 1;
+	BUG_ON (fb->ep1_in_req.buffer_length >
+		sizeof(fb->ep1_in_req.small_buffer));
+	memcpy(fb->ep1_in_req.buffer, status, strlen(status) + 1);
+	fb->ep1_in_req.complete = complete;
+	usbd_req_submit(context, &(fb->ep1_in_req));
+}
+
+static void
+fb_end_command(struct usbd *context,
+	       char *status)
+{
+	fb_end_command_with_custom_complete(context, status,
+					    fb_end_command_complete);
 }
 
 static void
 fb_end_command_with_info_complete(usbd *context,
-				 usbd_req *req)
+				  usbd_req *req)
 {
 	fb_end_command(context, FB_OK);
 }
@@ -146,29 +198,45 @@ static void
 fb_end_command_with_info(struct usbd *context, char *fmt, ...)
 {
 	va_list list;
-	fb_mem *fb_ctx = context->ctx;
+	fb_mem *fb = context->ctx;
 
 	va_start(list, fmt);
-	fb_ctx->ep1_in_req.buffer = fb_ctx->ep1_in_req.small_buffer;
+	fb->ep1_in_req.buffer = fb->ep1_in_req.small_buffer;
 
-	memcpy(fb_ctx->ep1_in_req.buffer, "INFO", 4);
-	fb_ctx->ep1_in_req.buffer_length =
-		vscnprintf(fb_ctx->ep1_in_req.buffer + 4,
-			   sizeof(fb_ctx->ep1_in_req.small_buffer) - 4,
+	memcpy(fb->ep1_in_req.buffer, "INFO", 4);
+	fb->ep1_in_req.buffer_length =
+		vscnprintf(fb->ep1_in_req.buffer + 4,
+			   sizeof(fb->ep1_in_req.small_buffer) - 4,
 			   fmt, list) + 4;
 
-	fb_ctx->ep1_in_req.complete = fb_end_command_with_info_complete;
-	usbd_req_submit(context, &(fb_ctx->ep1_in_req));
+	fb->ep1_in_req.complete = fb_end_command_with_info_complete;
+	usbd_req_submit(context, &(fb->ep1_in_req));
 
 	va_end(list);
+}
+
+static void
+fb_request_data(struct usbd *context)
+{
+	fb_mem *fb = context->ctx;
+
+	fb->ep1_in_req.buffer = fb->ep1_in_req.small_buffer;
+
+	fb->ep1_in_req.buffer_length =
+		scnprintf(fb->ep1_in_req.buffer,
+			  sizeof(fb->ep1_in_req.small_buffer),
+			  "DATA%08x", fb->load_size);
+
+	fb->ep1_in_req.complete = NULL;
+	usbd_req_submit(context, &(fb->ep1_in_req));
 }
 
 static void
 fb_oem_cmd_peek_exe(usbd *context,
 		    usbd_req *req)
 {
-	fb_mem *fb_ctx = context->ctx;
-	fb_cmd_peek *peek = &(fb_ctx->peek);
+	fb_mem *fb = context->ctx;
+	fb_peek_state *peek = &(fb->peek);
 	char *b = peek->buffer;
 
 	if (req != NULL && req->error) {
@@ -221,17 +289,17 @@ fb_oem_cmd_peek_exe(usbd *context,
 
 	*b++ = '\0';
 	BUG_ON (b - peek->buffer > peek->buffer_len);
-	fb_ctx->ep1_in_req.buffer_length = b - peek->buffer;
-	fb_ctx->ep1_in_req.complete = fb_oem_cmd_peek_exe;
-	usbd_req_submit(context, &(fb_ctx->ep1_in_req));
+	fb->ep1_in_req.buffer_length = b - peek->buffer;
+	fb->ep1_in_req.complete = fb_oem_cmd_peek_exe;
+	usbd_req_submit(context, &(fb->ep1_in_req));
 }
 
 static fb_status
 fb_oem_cmd_peek(usbd *context,
 		char *cmd)
 {
-	fb_mem *fb_ctx = context->ctx;
-	fb_cmd_peek *peek = &fb_ctx->peek;
+	fb_mem *fb = context->ctx;
+	fb_peek_state *peek = &fb->peek;
 
 	peek->addr = simple_strtoull(cmd, &cmd, 0);
 	if (*cmd != ' ') {
@@ -265,9 +333,9 @@ fb_oem_cmd_peek(usbd *context,
 		return FB_BAD_COMMAND;
 	}
 
-	C_ASSERT(sizeof(fb_ctx->ep1_in_req.small_buffer) >= 64);
-	peek->buffer = (char *) fb_ctx->ep1_in_req.small_buffer;
-	peek->buffer_len = sizeof(fb_ctx->ep1_in_req.small_buffer);
+	C_ASSERT(sizeof(fb->ep1_in_req.small_buffer) >= 64);
+	peek->buffer = (char *) fb->ep1_in_req.small_buffer;
+	peek->buffer_len = sizeof(fb->ep1_in_req.small_buffer);
 	fb_oem_cmd_peek_exe(context, NULL);
 	return FB_OK;
 }
@@ -381,7 +449,7 @@ fb_oem_cmd_alloc_ex(usbd *context,
 	addr = lmb_alloc_base(&lmb, size, align, max_addr,
 			      type, LMB_TAG("FBRQ"));
 	if (addr == 0) {
-		return FB_FAIL_COMMAND;
+		return FB_OOM;
 	}
 
 	fb_end_command_with_info(context, "0x%lx", addr);
@@ -454,6 +522,10 @@ fb_oem_cmd_smccc(usbd *context,
 		cmd++;
 	}
 
+	if (*cmd != '\0') {
+		return FB_BAD_COMMAND;
+	}
+
 	smc_call(inout);
 	fb_end_command_with_info(context, "0x%lx 0x%lx 0x%lx 0x%lx",
 				 inout[0], inout[1], inout[2], inout[3]);
@@ -461,13 +533,25 @@ fb_oem_cmd_smccc(usbd *context,
 	return FB_OK;
 }
 
+static void
+fb_cmd_reboot_complete(usbd *context,
+		       usbd_req *req)
+{
+	fb_mem *fb = context->ctx;
+	usbd_fini(context);
+	tegra_reboot(fb->reboot.type);
+}
+
 static fb_status
 fb_cmd_reboot(usbd *context,
 	      reboot_type type)
 {
-	fb_end_command(context, FB_OK);
+	fb_mem *fb = context->ctx;
+	fb->reboot.type = type;
 
-	tegra_reboot(type);
+	fb_end_command_with_custom_complete(context, FB_OK,
+		fb_cmd_reboot_complete);
+
 	return FB_OK;
 }
 
@@ -525,17 +609,109 @@ fb_cmd_oem(usbd *context,
 }
 
 static void
+fb_cmd_flash_complete(usbd *context,
+		       usbd_req *req)
+{
+	fb_mem *fb = context->ctx;
+	void (*binary)(void *fdt);
+
+	binary = VP(fb->last_loaded);
+	if (!memcmp(fb->last_loaded, BOOT_MAGIC, BOOT_MAGIC_SIZE)) {
+		/*
+		 * An Android boot image-formatted binary blob. We
+		 * completely ignore the header today. Eventually, we may
+		 * support initrd and etc.
+		 */
+		boot_img *img = VP(fb->last_loaded);
+		/*
+		 * Only those binaries that can deal with the img->page_size
+		 * alignment will run. shieldTV_loader itself is okay as
+		 * it is expecting a PAGE_SIZE alignment (and img->page_size
+		 * is thus set to PAGE_SIZE, too).
+		 */
+		binary = VP(img->page_size + fb->last_loaded);
+	}
+
+	usbd_fini(context);
+	binary(fb->fdt);
+}
+
+static fb_status
+fb_cmd_flash(usbd *context,
+	     char *cmd)
+{
+	fb_mem *fb = context->ctx;
+
+	if (strcmp(cmd, "run") != 0) {
+		return FB_BAD_COMMAND;
+	}
+
+	if (fb->last_loaded == NULL) {
+		return FB_NOT_DOWNLOADED;
+	}
+
+	fb_end_command_with_custom_complete(context, FB_OK,
+		fb_cmd_flash_complete);
+	return FB_OK;
+}
+
+static fb_status
+fb_cmd_download(usbd *context,
+		char *cmd)
+{
+	size_t size;
+	fb_mem *fb = context->ctx;
+
+	if (fb->last_loaded != NULL) {
+		lmb_free(&lmb,
+			 (phys_addr_t) fb->last_loaded,
+			 fb->load_size,
+			 fb->load_align);
+		fb->last_loaded = NULL;
+		fb->load_size = 0;
+		fb->load_align = 0;
+	}
+
+	size = simple_strtoull(cmd, &cmd, 16);
+	if (*cmd != '\0') {
+		return FB_BAD_COMMAND;
+	}
+
+	fb->last_loaded = VP(lmb_alloc_base(&lmb, size,
+						DOWNLOAD_ALIGNMENT,
+						/* Buffer will be DMA'd into by USB */
+						LMB_ALLOC_32BIT,
+						LMB_BOOT, LMB_TAG("DLOD")));
+	if (fb->last_loaded == NULL) {
+		return FB_OOM;
+	}
+
+	fb->load_size = size;
+	fb->load_rem = size;
+	fb->load_align = DOWNLOAD_ALIGNMENT;
+
+	/*
+	 * Cancel pending rx_cmd, because we'll want to receive data.
+	 */
+	usbd_req_cancel(context, &(fb->ep1_out_req));
+	fb_request_data(context);
+	fb_rx_data(context, NULL);
+
+	return FB_OK;
+}
+
+static void
 fb_rx_cmd_complete(usbd *context,
 		   usbd_req *req)
 {
 	fb_status status = FB_UNKNOWN_COMMAND;
-	fb_mem *fb_ctx = context->ctx;
+	fb_mem *fb = context->ctx;
 	char *cbuf = req->buffer;
 
 	/*
 	 * Resubmit command.
 	 */
-	if (context->current_config != 0) {
+	if (!req->cancel) {
 		fb_rx_cmd(context, NULL);
 	}
 
@@ -543,7 +719,7 @@ fb_rx_cmd_complete(usbd *context,
 		return;
 	}
 
-	if (fb_ctx->in_command) {
+	if (fb->in_command) {
 		/*
 		 * Cancel previous command. Note that this TX
 		 * request, submitted some time in the past,
@@ -552,16 +728,16 @@ fb_rx_cmd_complete(usbd *context,
 		 * usbd_req_cancel most likely will just cancel
 		 * the completion ack. But this is fine...
 		 */
-		fb_ctx->in_command = false;
-		usbd_req_cancel(context, &(fb_ctx->ep1_in_req));
+		fb->in_command = false;
+		usbd_req_cancel(context, &(fb->ep1_in_req));
 	}
-	fb_ctx->in_command = true;
+	fb->in_command = true;
 
 	/*
 	 * For ease of parsing, consider this to be an ASCIIZ buffer.
 	 */
-	cbuf[sizeof(fb_ctx->ep1_out_req.small_buffer) - 1] = '\0';
-
+	cbuf[sizeof(fb->ep1_out_req.small_buffer) - 1] = '\0';
+ 
 #define CMD_LIST				\
 	CMD(oem)				\
 	CMD_NO_PARAM(reboot)				\
@@ -569,18 +745,22 @@ fb_rx_cmd_complete(usbd *context,
 #define CMD(x) else  \
 		}
 
-#define CMD_NO_PARAM(x) else if (!memcmp(req->buffer, S(x), sizeof(S(x)) - 1)) { \
-			status = fb_cmd_##x(context,((char *) req->buffer) + sizeof(S(x)) - 1); \
+#define CMD_NO_PARAM(x) else if (!memcmp(cbuf, S(x), sizeof(S(x)) - 1)) { \
+			status = fb_cmd_##x(context,((char *) cbuf) + sizeof(S(x)) - 1); \
 		}
 
-	if (!memcmp(req->buffer, "oem ", sizeof("oem ") - 1)) {
-		status = fb_cmd_oem(context,
-				    ((char *) req->buffer) + sizeof("oem ") - 1);
-	} else if (!strcmp(req->buffer, "reboot")) {
+	if (!memcmp(cbuf, "oem ", sizeof("oem ") - 1)) {
+		status = fb_cmd_oem(context, cbuf + sizeof("oem ") - 1);
+	} else if (!strcmp(cbuf, "reboot")) {
 		status = fb_cmd_reboot(context, REBOOT_NORMAL);
-	} else if (!strcmp(req->buffer, "reboot-bootloader")) {
+	} else if (!strcmp(cbuf, "reboot-bootloader")) {
 		status = fb_cmd_reboot(context, REBOOT_BOOTLOADER);
+	} else if (!memcmp(cbuf, "download:", sizeof("download:") - 1)) {
+		status = fb_cmd_download(context, cbuf + sizeof("download:") - 1);
+	} else if (!memcmp(cbuf, "flash:", sizeof("flash:") - 1)) {
+		status = fb_cmd_flash(context, cbuf + sizeof("flash:") - 1);
 	}
+
 
 #undef CMD
 #undef CMD_NO_PARAM
@@ -598,15 +778,62 @@ fb_rx_cmd_complete(usbd *context,
 }
 
 static void
+fb_rx_data_complete(usbd *context,
+		    usbd_req *req)
+{
+	fb_mem *fb = context->ctx;
+
+	if (req->error) {
+		if (req->cancel) {
+			/*
+			 * We're restarting everything.
+			 */
+			return;
+		}
+	} else {
+		fb->load_rem -= req->io_done;
+	}
+
+	if (fb->load_rem == 0) {
+		/*
+		 * Start listening for more commands again.
+		 */
+		fb_rx_cmd(context, NULL);
+		fb_end_command_with_info(context, "Loaded at %p-%p",
+					 fb->last_loaded,
+					 fb->last_loaded + fb->load_size - 1);
+		return;
+	}
+
+	/*
+	 * Submit to handle again, either to get more, or because
+	 * of a recoverable (hopefully) error.
+	 */
+	fb_rx_data(context, NULL);
+}
+
+static void
+fb_rx_data(struct usbd *context, usbd_req *unused)
+{
+	fb_mem *fb = context->ctx;
+
+	fb->ep1_out_req.buffer = fb->last_loaded +
+		(fb->load_size - fb->load_rem);
+	fb->ep1_out_req.buffer_length = fb->load_rem;
+	fb->ep1_out_req.complete = fb_rx_data_complete;
+	usbd_req_submit(context, &(fb->ep1_out_req));
+}
+
+static void
 fb_rx_cmd(struct usbd *context, usbd_req *unused)
 {
-	fb_mem *fb_ctx = context->ctx;
+	fb_mem *fb = context->ctx;
 
-	C_ASSERT(sizeof(fb_ctx->ep1_out_req.small_buffer) >= 64);
-	fb_ctx->ep1_out_req.buffer = fb_ctx->ep1_out_req.small_buffer;
-	fb_ctx->ep1_out_req.buffer_length = 64;
-	fb_ctx->ep1_out_req.complete = fb_rx_cmd_complete;
-	usbd_req_submit(context, &(fb_ctx->ep1_out_req));
+	C_ASSERT(sizeof(fb->ep1_out_req.small_buffer) >= 64);
+	fb->ep1_out_req.buffer = fb->ep1_out_req.small_buffer;
+	fb->ep1_out_req.buffer_length = 64;
+	fb->ep1_out_req.complete = fb_rx_cmd_complete;
+	usbd_req_submit(context, &(fb->ep1_out_req));
 }
 
 static usbd_status
@@ -621,20 +848,20 @@ fb_set_config(struct usbd *context,
 		usbd_ep_enable(context, &fb_ep1_out, &fb_ep1_in);
 		fb_rx_cmd(context, NULL);
 	} else {
-		fb_mem *fb_ctx = context->ctx;
+		fb_mem *fb = context->ctx;
 		usbd_ep_disable(context, &fb_ep1_out, &fb_ep1_in);
-		fb_ctx->in_command = false;
-		usbd_req_cancel(context, &(fb_ctx->ep1_in_req));
-		usbd_req_cancel(context, &(fb_ctx->ep1_out_req));
+		fb->in_command = false;
+		usbd_req_cancel(context, &(fb->ep1_in_req));
+		usbd_req_cancel(context, &(fb->ep1_out_req));
 	}
 
 	return USBD_SUCCESS;
 }
 
 void
-fb_launch(void)
+fb_launch(void *fdt)
 {
-	fb_mem *fb_ctx;
+	fb_mem *fb;
 	usbd_status usbd_stat;
 	phys_addr_t usb_dma_memory;
 
@@ -645,22 +872,23 @@ fb_launch(void)
 
 	lmb_dump_all(&lmb);
 
-	fb_ctx = VP(usb_dma_memory);
-	memset(fb_ctx, 0, sizeof(fb_mem));
-	fb_ctx->uctx.ehci_udc_base = TEGRA_EHCI_BASE;
-	fb_ctx->uctx.ctx = fb_ctx;
-	fb_ctx->uctx.eps = fb_eps;
-	fb_ctx->uctx.fs_descs = descr_fs;
-	fb_ctx->uctx.hs_descs = descr_hs;
-	fb_ctx->uctx.set_config = fb_set_config;
+	fb = VP(usb_dma_memory);
+	memset(fb, 0, sizeof(fb_mem));
+	fb->uctx.ehci_udc_base = TEGRA_EHCI_BASE;
+	fb->uctx.ctx = fb;
+	fb->uctx.eps = fb_eps;
+	fb->uctx.fs_descs = descr_fs;
+	fb->uctx.hs_descs = descr_hs;
+	fb->uctx.set_config = fb_set_config;
+	fb->fdt = fdt;
 
-	usbd_stat = usbd_init(&(fb_ctx->uctx), fb_ctx->qtds, ELES(fb_ctx->qtds));
+	usbd_req_init(&(fb->ep1_out_req), &fb_ep1_out);
+	usbd_req_init(&(fb->ep1_in_req), &fb_ep1_in);
+
+	usbd_stat = usbd_init(&(fb->uctx), fb->qtds, ELES(fb->qtds));
 	BUG_ON (usbd_stat != USBD_SUCCESS);
 
-	usbd_req_init(&(fb_ctx->ep1_out_req), &fb_ep1_out);
-	usbd_req_init(&(fb_ctx->ep1_in_req), &fb_ep1_in);
-
 	while(1) {
-		usbd_poll(&(fb_ctx->uctx));
+		usbd_poll(&(fb->uctx));
 	}
 }
